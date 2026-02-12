@@ -1,9 +1,15 @@
 # customer_app.py
 
 from datetime import datetime
+from pathlib import Path
+import sys
 
 import streamlit as st
 from streamlit_calendar import calendar
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 from production_scheduler.calendar_ui import CUSTOMER_CALENDAR_CUSTOM_CSS, build_calendar_options
 from production_scheduler.customer_portal import (
     build_excel_bytes,
