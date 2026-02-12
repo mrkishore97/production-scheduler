@@ -88,24 +88,6 @@ streamlit run customer/customer_app.py
 streamlit run customer/customer_specific_app.py
 ```
 
-### Creating tokenized customer links
-Use the customer token app base URL and append the token as a query parameter:
-
-```text
-https://<your-streamlit-app-url>/?token=<TOKEN_VALUE>
-```
-
-Examples:
-
-- `https://yourapp.streamlit.app/?token=example_token_single`
-- `https://yourapp.streamlit.app/?token=def456uvw`
-
-Notes:
-
-- The token must exist under `[tokens]` in `.streamlit/secrets.toml`.
-- A token can map to one customer (string) or multiple customers (array).
-- If the token is missing/invalid, the customer sees an access denied screen.
-
 ---
 
 ## Data Model (Supabase table: `order_book`)
