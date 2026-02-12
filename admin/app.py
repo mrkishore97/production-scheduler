@@ -3,13 +3,19 @@
 import hashlib
 import io
 import re
+import sys
 from datetime import datetime, date
 from calendar import monthrange
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from streamlit_calendar import calendar
 from supabase import Client, create_client
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
 from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
