@@ -9,23 +9,14 @@ from calendar import monthrange
 import pandas as pd
 import streamlit as st
 from streamlit_calendar import calendar
-from supabase import create_client, Client
+from supabase import Client, create_client
+
+from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
+from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
+from production_scheduler.status import normalize_status_key, status_to_colors
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Order Book Calendar", layout="wide")
-
-REQUIRED_COLS = [
-    "WO",
-    "Quote",
-    "PO Number",
-    "Status",
-    "Customer Name",
-    "Model Description",
-    "Scheduled Date",
-    "Price",
-]
-
-SUPABASE_TABLE = "order_book"
 
 COLUMN_ALIASES = {
     "wo": "WO", "work order": "WO", "workorder": "WO",
@@ -42,41 +33,6 @@ COLUMN_ALIASES = {
     "delivery date": "Scheduled Date", "date": "Scheduled Date",
     "price": "Price", "amount": "Price", "value": "Price",
 }
-
-STATUS_COLORS = {
-    "open":       {"backgroundColor": "#2563eb", "borderColor": "#1d4ed8", "textColor": "#ffffff"},
-    "in progress":{"backgroundColor": "#d97706", "borderColor": "#b45309", "textColor": "#ffffff"},
-    "completed":  {"backgroundColor": "#16a34a", "borderColor": "#15803d", "textColor": "#ffffff"},
-    "on hold":    {"backgroundColor": "#6b7280", "borderColor": "#4b5563", "textColor": "#ffffff"},
-    "cancelled":  {"backgroundColor": "#dc2626", "borderColor": "#b91c1c", "textColor": "#ffffff"},
-    "default":    {"backgroundColor": "#0f766e", "borderColor": "#115e59", "textColor": "#ffffff"},
-}
-
-STATUS_KEYWORDS = {
-    "open":        ["open", "new", "pending"],
-    "in progress": ["in progress", "inprogress", "wip", "started", "working"],
-    "completed":   ["completed", "complete", "done", "closed", "shipped", "delivered"],
-    "on hold":     ["on hold", "hold", "paused", "waiting"],
-    "cancelled":   ["cancelled", "canceled", "void"],
-}
-
-
-def normalize_status_key(status: str) -> str:
-    raw = str(status or "").strip().lower()
-    if not raw:
-        return "default"
-    compact = re.sub(r"[^a-z0-9]+", " ", raw).strip()
-    if compact in STATUS_COLORS:
-        return compact
-    for canonical, keywords in STATUS_KEYWORDS.items():
-        if any(k in compact for k in keywords):
-            return canonical
-    return "default"
-
-
-def status_to_colors(status: str) -> dict:
-    return STATUS_COLORS[normalize_status_key(status)]
-
 
 # ---------------- Supabase ----------------
 
@@ -631,24 +587,8 @@ events = df_to_calendar_events(st.session_state.df)
 
 cal_state = calendar(
     events=events,
-    options={
-        "initialView": "dayGridMonth",
-        "editable": True,
-        "height": 900,
-        "eventDisplay": "block",
-        "dayMaxEvents": False,
-        "headerToolbar": {
-            "left": "today prev,next",
-            "center": "title",
-            "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
-        },
-    },
-    custom_css="""
-        .fc .fc-daygrid-event, .fc .fc-timegrid-event { white-space: normal !important; }
-        .fc .fc-event-title, .fc .fc-list-event-title {
-            white-space: normal !important; overflow: visible !important; text-overflow: clip !important;
-        }
-    """,
+    options=build_calendar_options(editable=True, height=900),
+    custom_css=ADMIN_CALENDAR_CUSTOM_CSS,
     key=f"calendar_{st.session_state.df_version}",
 )
 
