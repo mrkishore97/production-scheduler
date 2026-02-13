@@ -1,6 +1,7 @@
 # pages/customer_table_view.py
 
 from datetime import datetime
+import uuid
 
 import pandas as pd
 import streamlit as st
@@ -24,7 +25,10 @@ def get_supabase() -> Client:
 
 
 @st.cache_data(ttl=300)
-def load_all_data() -> pd.DataFrame:
+def load_all_data(cache_key: str = "global") -> pd.DataFrame:
+    # cache_key allows a fresh fetch when a new browser session starts,
+    # while preserving cache reuse during normal reruns in the same session.
+    _ = cache_key
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
@@ -113,9 +117,13 @@ for key, default in [
     ("customer_display",    ""),
     ("login_username",      None),
     ("df_version",          0),
+    ("session_cache_key",   None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+if not st.session_state.session_cache_key:
+    st.session_state.session_cache_key = uuid.uuid4().hex
 
 
 # ================================================================
@@ -164,7 +172,7 @@ with st.sidebar:
         st.rerun()
 
 # ---- Load & filter to this user's customers ----
-df_all = load_all_data()
+df_all = load_all_data(st.session_state.session_cache_key)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]
