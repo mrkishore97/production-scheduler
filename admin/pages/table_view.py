@@ -1,4 +1,4 @@
-# pages/table_view.py
+# admin/pages/table_view.py
 
 import re
 from datetime import datetime
