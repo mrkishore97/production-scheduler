@@ -144,9 +144,14 @@ for key, default in [
     ("login_username",      None),
     ("df_version",          0),
     ("show_print_preview",  False),
+    ("cache_bootstrapped",  False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+if not st.session_state.cache_bootstrapped:
+    load_all_data.clear()
+    st.session_state.cache_bootstrapped = True
 
 
 # ================================================================

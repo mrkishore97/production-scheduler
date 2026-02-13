@@ -24,7 +24,7 @@ def get_supabase() -> Client:
 
 
 @st.cache_data(ttl=300)
-def load_all_data() -> pd.DataFrame:
+def load_all_data(*_args, **_kwargs) -> pd.DataFrame:
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
@@ -113,9 +113,14 @@ for key, default in [
     ("customer_display",    ""),
     ("login_username",      None),
     ("df_version",          0),
+    ("cache_bootstrapped",  False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+if not st.session_state.cache_bootstrapped:
+    load_all_data.clear()
+    st.session_state.cache_bootstrapped = True
 
 
 # ================================================================

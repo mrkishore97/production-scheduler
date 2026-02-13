@@ -16,7 +16,7 @@ def get_supabase() -> Client:
 
 
 @st.cache_data(ttl=300)
-def load_all_data() -> pd.DataFrame:
+def load_all_data(*_args, **_kwargs) -> pd.DataFrame:
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
