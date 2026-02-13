@@ -1,4 +1,4 @@
-# customer_specific_app.py
+# customer/customer_specific_app.py
 # Token-based customer portal — no login required.
 # Each customer gets a unique URL: https://yourapp.streamlit.app/?token=abc123xyz
 #
