@@ -1,15 +1,4 @@
-# customer/customer_specific_app.py
-# Token-based customer portal — no login required.
-# Each customer gets a unique URL: https://yourapp.streamlit.app/?token=abc123xyz
-#
-# secrets.toml format:
-#
-# [tokens]
-# abc123xyz = "Trans East Trailers Moncton"
-# def456uvw = "Trans East Trailers Ontario"
-# ghi789rst = "Acme Corp"
-#
-# Generate tokens with: python -c "import secrets; print(secrets.token_urlsafe(24))"
+# customer/customer_app.py
 
 from datetime import datetime
 from pathlib import Path
@@ -34,38 +23,53 @@ from production_scheduler.customer_portal import (
 st.set_page_config(page_title="Customer Order Portal", layout="wide")
 
 # ================================================================
-#  TOKEN AUTH
+#  AUTH
+#  Credentials live in .streamlit/secrets.toml under [customers]
+#
+#  Example secrets.toml layout:
+#
+#  [customers.user1]
+#  password       = "hunter2"
+#  customer_names = ["Acme Corp", "Beta Industries"]
+#
+#  [customers.user2]
+#  password       = "letmein"
+#  customer_names = ["Beta Industries"]
+#
+#  customer_names values MUST match exactly how names appear
+#  in the Customer Name column of your order book.
 # ================================================================
 
-def resolve_token(token: str) -> list[str] | None:
+def verify_login(username: str, password: str) -> list[str] | None:
     """
-    Looks up a URL token in st.secrets['tokens'].
-    Returns a list of customer names, or None if token is invalid.
-
-    secrets.toml supports two formats:
-
-    # Single customer
-    abc123 = "Acme Corp"
-
-    # Multiple customers (TOML array)
-    def456 = ["Trans East Trailers Moncton", "Trans East Trailers Ontario"]
+    Checks credentials against st.secrets['customers'].
+    Returns a list of customer names the user can see, or None if invalid.
+    Supports both legacy single `customer_name` and new `customer_names` list.
     """
     try:
-        tokens_cfg = st.secrets.get("tokens", {})
+        customers_cfg = st.secrets.get("customers", {})
     except Exception:
+        customers_cfg = {}
+
+    entry = customers_cfg.get(username.strip())
+    if not entry or entry.get("password") != password:
         return None
 
-    value = tokens_cfg.get(token.strip())
-    if value is None:
-        return None
+    # New list format
+    if "customer_names" in entry:
+        names = entry["customer_names"]
+        return [names] if isinstance(names, str) else list(names)
 
-    if isinstance(value, str):
-        return [value]
-    return list(value)
+    # Legacy single customer_name (backwards compatible)
+    if "customer_name" in entry:
+        return [entry["customer_name"]]
+
+    return None
 
 
-def show_invalid_token_screen():
-    """Shown when no token or an unrecognised token is in the URL."""
+def show_login_screen():
+    """Renders a centered login card. Stops execution until successful login."""
+
     st.markdown(
         """
         <style>
@@ -75,38 +79,56 @@ def show_invalid_token_screen():
         }
         [data-testid="collapsedControl"] { display: none; }
         section[data-testid="stSidebar"] { display: none; }
-        .err-card {
+        .login-card {
             background: white;
-            padding: 2.5rem 3rem;
+            padding: 2.5rem 3rem 2rem 3rem;
             border-radius: 18px;
             box-shadow: 0 24px 64px rgba(0,0,0,0.35);
-            max-width: 460px;
-            text-align: center;
+            width: 100%;
+            max-width: 420px;
         }
-        .err-icon  { font-size: 3rem; margin-bottom: 8px; }
-        .err-title { font-size: 1.3rem; font-weight: 700; color: #1e3a5f; margin: 0; }
-        .err-sub   { font-size: 0.9rem; color: #64748b; margin-top: 8px; }
+        .login-icon  { text-align: center; font-size: 3rem; margin-bottom: 4px; }
+        .login-title { text-align: center; font-size: 1.45rem; font-weight: 700;
+                       color: #1e3a5f; margin: 0; }
+        .login-sub   { text-align: center; font-size: 0.85rem; color: #64748b;
+                       margin: 6px 0 1.8rem 0; }
         .footer-note { text-align: center; color: rgba(255,255,255,0.55);
                        font-size: 0.78rem; margin-top: 1.5rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
     _, mid, _ = st.columns([1, 2.2, 1])
     with mid:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.markdown('<div class="login-icon">🏭</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">Customer Portal</div>', unsafe_allow_html=True)
         st.markdown(
-            """
-            <div class="err-card">
-              <div class="err-icon">🔒</div>
-              <div class="err-title">Access Denied</div>
-              <div class="err-sub">
-                This link is invalid or has expired.<br><br>
-                Please contact your administrator to receive a valid link.
-              </div>
-            </div>
-            """,
+            '<div class="login-sub">Sign in to view your production schedule</div>',
             unsafe_allow_html=True,
         )
+
+        username = st.text_input("Username", placeholder="Enter your username", key="li_user")
+        password = st.text_input("Password", placeholder="Enter your password",
+                                 type="password", key="li_pass")
+
+        if st.button("Sign In →", type="primary", use_container_width=True):
+            if not username.strip() or not password:
+                st.error("Please enter both username and password.")
+            else:
+                customer_names = verify_login(username, password)
+                if customer_names:
+                    st.session_state.authenticated       = True
+                    st.session_state.logged_in_customers = customer_names
+                    st.session_state.login_username      = username.strip()
+                    st.session_state.customer_display    = ", ".join(customer_names)
+                    st.rerun()
+                else:
+                    st.error("❌ Incorrect username or password.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown(
         '<div class="footer-note">Contact your administrator if you need access.</div>',
         unsafe_allow_html=True,
@@ -117,9 +139,10 @@ def show_invalid_token_screen():
 #  SESSION STATE INIT
 # ================================================================
 for key, default in [
-    ("token_verified",      False),
-    ("token_customers",     []),
+    ("authenticated",       False),
+    ("logged_in_customers", []),
     ("customer_display",    ""),
+    ("login_username",      None),
     ("df_version",          0),
     ("show_print_preview",  False),
 ]:
@@ -128,34 +151,16 @@ for key, default in [
 
 
 # ================================================================
-#  TOKEN GATE
-#  Read ?token= from URL on every page load.
-#  Once verified, cache result in session state so the page
-#  doesn't flicker on reruns.
+#  AUTH GATE
 # ================================================================
-params = st.query_params
-
-if not st.session_state.token_verified:
-    token = params.get("token", "")
-    if not token:
-        show_invalid_token_screen()
-        st.stop()
-
-    customer_names = resolve_token(token)
-    if not customer_names:
-        show_invalid_token_screen()
-        st.stop()
-
-    # Token is valid — store in session
-    st.session_state.token_verified   = True
-    st.session_state.token_customers  = customer_names
-    st.session_state.customer_display = ", ".join(customer_names)
-
+if not st.session_state.authenticated:
+    show_login_screen()
+    st.stop()
 
 # ================================================================
 #  AUTHENTICATED SECTION
 # ================================================================
-my_customers: list[str] = st.session_state.token_customers
+my_customers: list[str] = st.session_state.logged_in_customers
 customer_display: str   = st.session_state.customer_display
 
 _version = get_data_version()
@@ -169,13 +174,20 @@ my_df  = df_all[
 
 # ---- Sidebar ----
 with st.sidebar:
-    st.markdown(f"### 🏭 {customer_display}")
+    st.markdown(f"### 👤 {customer_display}")
+    st.caption(f"Signed in as `{st.session_state.login_username}`")
     if len(my_customers) > 1:
         st.caption("**Viewing orders for:**")
         for c in my_customers:
             st.caption(f"• {c}")
     st.divider()
+    st.caption("📖 Use the page selector to open **Table View**.")
     st.caption("🔒 Read-only — contact admin to make changes.")
+    st.divider()
+    if st.button("🚪 Log Out", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
 
 # ---- Page title ----
