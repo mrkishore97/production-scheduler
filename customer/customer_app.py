@@ -15,7 +15,7 @@ from production_scheduler.customer_portal import (
     build_excel_bytes,
     df_to_calendar_events,
     generate_monthly_print_view,
-    load_all_data_on_session_start,
+    load_all_data,
 )
 
 # ---------------- Config ----------------
@@ -162,7 +162,7 @@ if not st.session_state.authenticated:
 my_customers: list[str] = st.session_state.logged_in_customers
 customer_display: str   = st.session_state.customer_display
 
-df_all = load_all_data_on_session_start()
+df_all = load_all_data()
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]

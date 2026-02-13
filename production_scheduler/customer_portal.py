@@ -41,14 +41,6 @@ def load_all_data() -> pd.DataFrame:
     return df[present]
 
 
-def load_all_data_on_session_start() -> pd.DataFrame:
-    """Force one fresh fetch when a browser session starts, then use 300s cache."""
-    if "_customer_data_cache_initialized" not in st.session_state:
-        load_all_data.clear()
-        st.session_state["_customer_data_cache_initialized"] = True
-    return load_all_data()
-
-
 def parse_date(x):
     if x is None or str(x).strip() in ("", "None", "NaT"):
         return pd.NaT
