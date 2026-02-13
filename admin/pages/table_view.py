@@ -32,10 +32,15 @@ def get_supabase() -> Client:
 
 def save_data(df: pd.DataFrame, last_uploaded_name: str):
     """Replace all rows in Supabase with the current DataFrame."""
+    import time
+
     supabase = get_supabase()
     supabase.table(SUPABASE_TABLE).delete().neq("wo", "___never___").execute()
 
     if df.empty:
+        supabase.table("app_meta").upsert(
+            {"key": "data_version", "value": str(int(time.time()))}
+        ).execute()
         return
 
     rows = []
@@ -56,6 +61,10 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
 
     for i in range(0, len(rows), 500):
         supabase.table(SUPABASE_TABLE).insert(rows[i : i + 500]).execute()
+
+    supabase.table("app_meta").upsert(
+        {"key": "data_version", "value": str(int(time.time()))}
+    ).execute()
 
 
 def load_data() -> tuple[pd.DataFrame, str | None]:

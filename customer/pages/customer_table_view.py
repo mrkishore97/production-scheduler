@@ -4,61 +4,10 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
+
+from production_scheduler.customer_portal import get_data_version, load_all_data
 
 st.set_page_config(page_title="My Orders — Table", layout="wide")
-
-REQUIRED_COLS = [
-    "WO", "Quote", "PO Number", "Status",
-    "Customer Name", "Model Description", "Scheduled Date", "Price",
-]
-
-SUPABASE_TABLE = "order_book"
-
-
-# ---------------- Supabase ----------------
-
-@st.cache_resource
-def get_supabase() -> Client:
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-
-
-@st.cache_data(ttl=300)
-def load_all_data() -> pd.DataFrame:
-    supabase = get_supabase()
-    response = supabase.table(SUPABASE_TABLE).select("*").execute()
-    rows = response.data
-
-    if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS)
-
-    df = pd.DataFrame(rows)
-    df = df.rename(columns={
-        "wo": "WO", "quote": "Quote", "po_number": "PO Number",
-        "status": "Status", "customer_name": "Customer Name",
-        "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "price": "Price",
-    })
-    df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
-    df["Scheduled Date"] = df["Scheduled Date"].apply(_parse_date)
-    df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
-    for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
-        df[c] = df[c].fillna("").astype(str)
-
-    present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present]
-
-
-def _parse_date(x):
-    if x is None or str(x).strip() in ("", "None", "NaT"):
-        return pd.NaT
-    try:
-        if pd.isna(x):
-            return pd.NaT
-    except Exception:
-        pass
-    return pd.to_datetime(x, errors="coerce").date()
-
 
 def apply_filters(df, filters):
     out = df.copy()
@@ -164,7 +113,8 @@ with st.sidebar:
         st.rerun()
 
 # ---- Load & filter to this user's customers ----
-df_all = load_all_data()
+_version = get_data_version()
+df_all = load_all_data(data_version=_version)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]

@@ -50,11 +50,16 @@ def get_supabase() -> Client:
 
 def save_data(df: pd.DataFrame, last_uploaded_name: str):
     """Replace all rows in Supabase with the current DataFrame (delete-all + insert)."""
+    import time
+
     supabase = get_supabase()
     # Delete everything. We use neq on a column that always has a value.
     supabase.table(SUPABASE_TABLE).delete().neq("wo", "___never___").execute()
 
     if df.empty:
+        supabase.table("app_meta").upsert(
+            {"key": "data_version", "value": str(int(time.time()))}
+        ).execute()
         return
 
     rows = []
@@ -76,6 +81,10 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
     # Insert in batches of 500 to stay within Supabase request limits
     for i in range(0, len(rows), 500):
         supabase.table(SUPABASE_TABLE).insert(rows[i : i + 500]).execute()
+
+    supabase.table("app_meta").upsert(
+        {"key": "data_version", "value": str(int(time.time()))}
+    ).execute()
 
 
 def load_data() -> tuple[pd.DataFrame, str | None]:
