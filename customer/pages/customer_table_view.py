@@ -277,24 +277,8 @@ st.dataframe(
 
 st.divider()
 
-# ---- Summary ----
-st.subheader("📊 Summary")
-s1, s2, s3 = st.columns(3)
-with s1:
-    st.metric("Orders Shown", len(display_df))
-with s2:
-    total_val = display_df["Price"].dropna().sum() if not display_df.empty else 0
-    st.metric("Total Value", f"${total_val:,.2f}")
-with s3:
-    if not display_df.empty:
-        common = display_df["Status"].mode()
-        st.metric("Most Common Status", common.iloc[0] if len(common) else "—")
-
-# Status bar chart
-if not display_df.empty:
-    st.subheader("📈 Status Breakdown")
-    status_counts = display_df["Status"].value_counts()
-    st.bar_chart(status_counts)
+pending_orders_count = (my_df["Status"].str.strip().str.lower() != "completed").sum()
+st.metric("Pending orders", int(pending_orders_count))
 
 st.divider()
 st.caption("💡 Need to make changes to an order? Please contact your administrator.")
