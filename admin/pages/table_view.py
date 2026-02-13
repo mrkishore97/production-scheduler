@@ -17,6 +17,7 @@ REQUIRED_COLS = [
     "Customer Name",
     "Model Description",
     "Scheduled Date",
+    "Completion Date",
     "Price",
 ]
 
@@ -46,6 +47,7 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
     rows = []
     for _, r in df.iterrows():
         d = r.get("Scheduled Date", pd.NaT)
+        cd = r.get("Completion Date", pd.NaT)
         price = r.get("Price", None)
         rows.append({
             "wo":                str(r.get("WO", "")).strip(),
@@ -55,6 +57,7 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
             "customer_name":     str(r.get("Customer Name", "")),
             "model_description": str(r.get("Model Description", "")),
             "scheduled_date":    d.isoformat() if not pd.isna(d) else None,
+            "completion_date":   cd.isoformat() if not pd.isna(cd) else None,
             "price":             float(price) if price is not None and not pd.isna(price) else None,
             "uploaded_name":     last_uploaded_name or "",
         })
@@ -83,11 +86,12 @@ def load_data() -> tuple[pd.DataFrame, str | None]:
         "wo": "WO", "quote": "Quote", "po_number": "PO Number",
         "status": "Status", "customer_name": "Customer Name",
         "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "price": "Price",
+        "scheduled_date": "Scheduled Date", "completion_date": "Completion Date", "price": "Price",
     })
     df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
 
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date)
+    df["Completion Date"] = df["Completion Date"].apply(parse_date)
     df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
     for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
         df[c] = df[c].fillna("").astype(str)
@@ -129,6 +133,7 @@ def normalize_df(df):
         df[c] = df[c].replace({"nan": "", "NaN": "", "None": "", "<NA>": ""})
 
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date)
+    df["Completion Date"] = df["Completion Date"].apply(parse_date)
     df["Price"] = df["Price"].apply(parse_price)
 
     summary_like = (
@@ -139,10 +144,11 @@ def normalize_df(df):
         & df["Customer Name"].eq("")
         & df["Model Description"].eq("")
         & df["Scheduled Date"].isna()
+        & df["Completion Date"].isna()
         & df["Price"].notna()
     )
     blank_text = df[["WO", "Quote", "PO Number", "Status", "Customer Name", "Model Description"]].eq("").all(axis=1)
-    df = df[~(summary_like | (blank_text & df["Scheduled Date"].isna() & df["Price"].isna()))]
+    df = df[~(summary_like | (blank_text & df["Scheduled Date"].isna() & df["Completion Date"].isna() & df["Price"].isna()))]
 
     return df
 
@@ -312,6 +318,7 @@ with st.form("table_form"):
         use_container_width=True,
         column_config={
             "Scheduled Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
+            "Completion Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
             "Price": st.column_config.NumberColumn(format="$%.2f"),
         },
     )
