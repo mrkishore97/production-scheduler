@@ -4,10 +4,17 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+from pathlib import Path
+import sys
+
+st.set_page_config(page_title="My Orders — Table", layout="wide")
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from production_scheduler.customer_portal import get_data_version, load_all_data
 
-st.set_page_config(page_title="My Orders — Table", layout="wide")
 
 def apply_filters(df, filters):
     out = df.copy()
