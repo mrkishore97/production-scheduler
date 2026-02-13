@@ -16,10 +16,7 @@ def get_supabase() -> Client:
 
 
 @st.cache_data(ttl=300)
-def load_all_data(cache_key: str = "global") -> pd.DataFrame:
-    # cache_key lets each browser session force an initial fresh read while
-    # still reusing cached data for normal reruns in that same session.
-    _ = cache_key
+def load_all_data() -> pd.DataFrame:
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
