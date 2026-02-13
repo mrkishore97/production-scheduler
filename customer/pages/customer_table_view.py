@@ -1,4 +1,4 @@
-# pages/customer_table_view.py
+# customer/pages/customer_table_view.py
 
 from datetime import datetime
 
