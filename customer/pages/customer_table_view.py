@@ -108,6 +108,8 @@ def apply_filters(df, filters):
 for key, default in [
     ("authenticated",       False),
     ("logged_in_customers", []),
+    ("token_verified",      False),
+    ("token_customers",     []),
     ("customer_display",    ""),
     ("login_username",      None),
     ("df_version",          0),
@@ -119,7 +121,12 @@ for key, default in [
 # ================================================================
 #  AUTH GATE
 # ================================================================
-if not st.session_state.authenticated:
+is_password_auth = bool(st.session_state.authenticated and st.session_state.logged_in_customers)
+is_token_auth = bool(st.session_state.get("token_verified") and st.session_state.get("token_customers"))
+
+if not is_password_auth and not is_token_auth:
+    st.title("🔒 Access Denied")
+    st.warning("You are not logged in or do not have a valid customer token.")
     st.info(
         "👈 Please go back to the **Customer Portal** main page to sign in "
         "or open this page using your secure token link."
@@ -130,13 +137,20 @@ if not st.session_state.authenticated:
 # ================================================================
 #  AUTHENTICATED SECTION
 # ================================================================
-my_customers: list[str] = st.session_state.logged_in_customers
-customer_display: str   = st.session_state.customer_display
+if is_password_auth:
+    my_customers: list[str] = st.session_state.logged_in_customers
+    customer_display: str = st.session_state.customer_display
+else:
+    my_customers = st.session_state.token_customers
+    customer_display = st.session_state.get("customer_display") or ", ".join(my_customers)
 
 # ---- Sidebar ----
 with st.sidebar:
     st.markdown(f"### 👤 {customer_display}")
-    st.caption(f"Signed in as `{st.session_state.login_username}`")
+    if is_password_auth:
+        st.caption(f"Signed in as `{st.session_state.login_username}`")
+    else:
+        st.caption("Accessed via secure token link")
     if len(my_customers) > 1:
         st.caption("**Viewing orders for:**")
         for c in my_customers:
