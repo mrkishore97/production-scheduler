@@ -37,6 +37,7 @@ COLUMN_ALIASES = {
     "scheduled date": "Scheduled Date", "schedule date": "Scheduled Date",
     "scheduled": "Scheduled Date", "ship date": "Scheduled Date",
     "delivery date": "Scheduled Date", "date": "Scheduled Date",
+    "completion date": "Completion Date", "completed date": "Completion Date",
     "price": "Price", "amount": "Price", "value": "Price",
 }
 
@@ -65,6 +66,7 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
     rows = []
     for _, r in df.iterrows():
         d = r.get("Scheduled Date", pd.NaT)
+        cd = r.get("Completion Date", pd.NaT)
         price = r.get("Price", None)
         rows.append({
             "wo":                str(r.get("WO", "")).strip(),
@@ -74,6 +76,7 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
             "customer_name":     str(r.get("Customer Name", "")),
             "model_description": str(r.get("Model Description", "")),
             "scheduled_date":    d.isoformat() if not pd.isna(d) else None,
+            "completion_date":   cd.isoformat() if not pd.isna(cd) else None,
             "price":             float(price) if price is not None and not pd.isna(price) else None,
             "uploaded_name":     last_uploaded_name or "",
         })
@@ -103,11 +106,12 @@ def load_data() -> tuple[pd.DataFrame, str | None]:
         "wo": "WO", "quote": "Quote", "po_number": "PO Number",
         "status": "Status", "customer_name": "Customer Name",
         "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "price": "Price",
+        "scheduled_date": "Scheduled Date", "completion_date": "Completion Date", "price": "Price",
     })
     df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
 
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date_to_date)
+    df["Completion Date"] = df["Completion Date"].apply(parse_date_to_date)
     df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
     for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
         df[c] = df[c].fillna("").astype(str)
@@ -177,6 +181,7 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].replace({"nan": "", "NaN": "", "None": "", "<NA>": ""})
 
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date_to_date)
+    df["Completion Date"] = df["Completion Date"].apply(parse_date_to_date)
     df["Price"] = df["Price"].apply(parse_price_to_float)
 
     # Drop Excel summary rows (e.g., WO count + total price footer).
@@ -188,13 +193,14 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         & df["Customer Name"].eq("")
         & df["Model Description"].eq("")
         & df["Scheduled Date"].isna()
+        & df["Completion Date"].isna()
         & df["Price"].notna()
     )
     df = df[~summary_like]
 
     # Remove trailing empty-looking rows that became blanks after cleanup.
     blank_text = df[["WO", "Quote", "PO Number", "Status", "Customer Name", "Model Description"]].eq("").all(axis=1)
-    df = df[~(blank_text & df["Scheduled Date"].isna() & df["Price"].isna())]
+    df = df[~(blank_text & df["Scheduled Date"].isna() & df["Completion Date"].isna() & df["Price"].isna())]
 
     return df
 
@@ -233,16 +239,21 @@ def uploaded_file_signature(file) -> str:
 def build_excel_bytes(df: pd.DataFrame) -> bytes:
     export_df = df.copy()
     export_df["Scheduled Date"] = pd.to_datetime(export_df["Scheduled Date"], errors="coerce")
+    export_df["Completion Date"] = pd.to_datetime(export_df["Completion Date"], errors="coerce")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         export_df.to_excel(writer, index=False, sheet_name="Order Book")
         ws = writer.sheets["Order Book"]
         col_map = {cell.value: cell.column for cell in ws[1]}
         date_col  = col_map.get("Scheduled Date")
+        completion_col = col_map.get("Completion Date")
         price_col = col_map.get("Price")
         if date_col:
             for r in range(2, ws.max_row + 1):
                 ws.cell(row=r, column=date_col).number_format = "yyyy-mm-dd"
+        if completion_col:
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=completion_col).number_format = "yyyy-mm-dd"
         if price_col:
             for r in range(2, ws.max_row + 1):
                 ws.cell(row=r, column=price_col).number_format = '"$"#,##0.00'

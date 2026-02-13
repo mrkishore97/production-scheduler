@@ -6,6 +6,7 @@ REQUIRED_COLS = [
     "Customer Name",
     "Model Description",
     "Scheduled Date",
+    "Completion Date",
     "Price",
 ]
 
