@@ -16,8 +16,25 @@ def get_supabase() -> Client:
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
 
+def get_data_version() -> str:
+    """Cheap single-row fetch — never cached, runs on every page load."""
+    supabase = get_supabase()
+    try:
+        resp = (
+            supabase.table("app_meta")
+            .select("value")
+            .eq("key", "data_version")
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]["value"]
+    except Exception:
+        pass
+    return "0"
+
+
 @st.cache_data(ttl=300)
-def load_all_data() -> pd.DataFrame:
+def load_all_data(data_version: str = "0") -> pd.DataFrame:
     supabase = get_supabase()
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data

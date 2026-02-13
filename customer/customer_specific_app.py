@@ -26,6 +26,7 @@ from production_scheduler.customer_portal import (
     build_excel_bytes,
     df_to_calendar_events,
     generate_monthly_print_view,
+    get_data_version,
     load_all_data,
 )
 
@@ -157,7 +158,8 @@ if not st.session_state.token_verified:
 my_customers: list[str] = st.session_state.token_customers
 customer_display: str   = st.session_state.customer_display
 
-df_all = load_all_data()
+_version = get_data_version()
+df_all = load_all_data(data_version=_version)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]
