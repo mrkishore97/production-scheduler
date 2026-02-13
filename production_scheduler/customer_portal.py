@@ -24,10 +24,21 @@ def load_all_data(cache_key: str = "global") -> pd.DataFrame:
     response = supabase.table(SUPABASE_TABLE).select("*").execute()
     rows = response.data
 
+    if isinstance(rows, dict):
+        rows = [rows]
+    elif not isinstance(rows, list):
+        rows = []
+
     if not rows:
         return pd.DataFrame(columns=REQUIRED_COLS)
 
-    df = pd.DataFrame(rows)
+    # Defensive guard: malformed rows from an external source should not
+    # break the customer portal.
+    normalized_rows = [r for r in rows if isinstance(r, dict)]
+    if not normalized_rows:
+        return pd.DataFrame(columns=REQUIRED_COLS)
+
+    df = pd.DataFrame(normalized_rows)
     df = df.rename(columns={
         "wo": "WO", "quote": "Quote", "po_number": "PO Number",
         "status": "Status", "customer_name": "Customer Name",
@@ -36,7 +47,7 @@ def load_all_data(cache_key: str = "global") -> pd.DataFrame:
     })
     df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date)
-    df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
+    df["Price"] = df["Price"].apply(parse_price)
     for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
         df[c] = df[c].fillna("").astype(str)
 
@@ -54,6 +65,20 @@ def parse_date(x):
         pass
     dt = pd.to_datetime(x, errors="coerce")
     return pd.NaT if pd.isna(dt) else dt.date()
+
+
+def parse_price(x):
+    if x is None:
+        return pd.NA
+    if isinstance(x, str):
+        cleaned = x.strip().replace("$", "").replace(",", "")
+        if cleaned == "":
+            return pd.NA
+        x = cleaned
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return pd.NA
 
 
 def is_mine(cust_col_value: str, my_customers: list[str]) -> bool:
