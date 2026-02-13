@@ -3,6 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 import sys
+import uuid
 
 import streamlit as st
 from streamlit_calendar import calendar
@@ -144,14 +145,13 @@ for key, default in [
     ("login_username",      None),
     ("df_version",          0),
     ("show_print_preview",  False),
-    ("cache_bootstrapped",  False),
+    ("session_cache_key",   None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
-if not st.session_state.cache_bootstrapped:
-    load_all_data.clear()
-    st.session_state.cache_bootstrapped = True
+if not st.session_state.session_cache_key:
+    st.session_state.session_cache_key = uuid.uuid4().hex
 
 
 # ================================================================
@@ -167,7 +167,7 @@ if not st.session_state.authenticated:
 my_customers: list[str] = st.session_state.logged_in_customers
 customer_display: str   = st.session_state.customer_display
 
-df_all = load_all_data()
+df_all = load_all_data(st.session_state.session_cache_key)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]
