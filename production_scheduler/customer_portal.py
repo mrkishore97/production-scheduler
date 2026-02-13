@@ -47,10 +47,11 @@ def load_all_data(data_version: str = "0") -> pd.DataFrame:
         "wo": "WO", "quote": "Quote", "po_number": "PO Number",
         "status": "Status", "customer_name": "Customer Name",
         "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "price": "Price",
+        "scheduled_date": "Scheduled Date", "completion_date": "Completion Date", "price": "Price",
     })
     df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date)
+    df["Completion Date"] = df["Completion Date"].apply(parse_date)
     df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
     for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
         df[c] = df[c].fillna("").astype(str)
@@ -115,16 +116,21 @@ def df_to_calendar_events(df: pd.DataFrame, my_customers: list[str]):
 def build_excel_bytes(df: pd.DataFrame) -> bytes:
     out = df.copy()
     out["Scheduled Date"] = pd.to_datetime(out["Scheduled Date"], errors="coerce")
+    out["Completion Date"] = pd.to_datetime(out["Completion Date"], errors="coerce")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="My Orders")
         ws = writer.sheets["My Orders"]
         col_map = {cell.value: cell.column for cell in ws[1]}
         dc = col_map.get("Scheduled Date")
+        cc = col_map.get("Completion Date")
         pc = col_map.get("Price")
         if dc:
             for r in range(2, ws.max_row + 1):
                 ws.cell(row=r, column=dc).number_format = "yyyy-mm-dd"
+        if cc:
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=cc).number_format = "yyyy-mm-dd"
         if pc:
             for r in range(2, ws.max_row + 1):
                 ws.cell(row=r, column=pc).number_format = '"$"#,##0.00'
@@ -165,7 +171,7 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_cust
         else:
             sold_dates.add(dk)
 
-    fdw = (datetime(year, month, 1).weekday() + 1) % 7
+    fdw = datetime(year, month, 1).weekday()
     num_days = monthrange(year, month)[1]
     weeks_need = ((num_days + fdw - 1) // 7) + 1
 
@@ -213,8 +219,8 @@ td.sold {{ background:#f8fafc; }}
 </div>
 <table>
 <thead><tr>
-  <th>Sunday</th><th>Monday</th><th>Tuesday</th>
-  <th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th>
+  <th>Monday</th><th>Tuesday</th><th>Wednesday</th>
+  <th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th>
 </tr></thead>
 <tbody>"""
 

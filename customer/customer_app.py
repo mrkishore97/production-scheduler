@@ -10,7 +10,7 @@ from streamlit_calendar import calendar
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-from production_scheduler.calendar_ui import CUSTOMER_CALENDAR_CUSTOM_CSS, build_calendar_options
+from production_scheduler.calendar_ui import CUSTOMER_CALENDAR_CUSTOM_CSS, build_calendar_options, ontario_holiday_events_2026
 from production_scheduler.customer_portal import (
     build_excel_bytes,
     df_to_calendar_events,
@@ -198,7 +198,7 @@ st.caption(
 )
 
 # ---- Calendar ----
-events = df_to_calendar_events(df_all, my_customers)
+events = df_to_calendar_events(df_all, my_customers) + ontario_holiday_events_2026()
 
 calendar(
     events=events,

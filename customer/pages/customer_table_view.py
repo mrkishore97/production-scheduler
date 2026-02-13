@@ -228,6 +228,7 @@ st.dataframe(
     hide_index=True,
     column_config={
         "Scheduled Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
+        "Completion Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
         "Price":          st.column_config.NumberColumn(format="$%.2f"),
     },
 )
