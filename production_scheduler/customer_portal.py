@@ -171,7 +171,7 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int, my_cust
         else:
             sold_dates.add(dk)
 
-    fdw = (datetime(year, month, 1).weekday() + 1) % 7
+    fdw = datetime(year, month, 1).weekday()
     num_days = monthrange(year, month)[1]
     weeks_need = ((num_days + fdw - 1) // 7) + 1
 
@@ -219,8 +219,8 @@ td.sold {{ background:#f8fafc; }}
 </div>
 <table>
 <thead><tr>
-  <th>Sunday</th><th>Monday</th><th>Tuesday</th>
-  <th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th>
+  <th>Monday</th><th>Tuesday</th><th>Wednesday</th>
+  <th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th>
 </tr></thead>
 <tbody>"""
 

@@ -17,7 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
+from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options, ontario_holiday_events_2026
 from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
 from production_scheduler.status import normalize_status_key, status_to_colors
 
@@ -445,22 +445,20 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int) -> str:
         <table class="calendar-table">
             <thead>
                 <tr>
-                    <th>Sunday</th>
                     <th>Monday</th>
                     <th>Tuesday</th>
                     <th>Wednesday</th>
                     <th>Thursday</th>
                     <th>Friday</th>
                     <th>Saturday</th>
+                    <th>Sunday</th>
                 </tr>
             </thead>
             <tbody>
     """
     
-    # Get the first day of the month and number of days
+    # Get the first day of the month and number of days (Mon=0 ... Sun=6)
     first_day_weekday = datetime(year, month, 1).weekday()
-    # Adjust for Sunday being 0
-    first_day_weekday = (first_day_weekday + 1) % 7
     num_days = monthrange(year, month)[1]
     
     # Build calendar grid
@@ -609,7 +607,7 @@ if file is not None:
 # ---------------- Calendar ----------------
 st.title("📅 Production Schedule Calendar")
 
-events = df_to_calendar_events(st.session_state.df)
+events = df_to_calendar_events(st.session_state.df) + ontario_holiday_events_2026()
 
 cal_state = calendar(
     events=events,
