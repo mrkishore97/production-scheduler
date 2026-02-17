@@ -268,7 +268,15 @@ with st.expander("Filter Options", expanded=False):
         
         st.markdown("**Date Filter**")
         date_filter_type = st.radio("Filter by", ["None", "Exact Date", "Month"], horizontal=True, key="date_filter_type")
-        
+
+        st.markdown("**Sort by Scheduled Date**")
+        sort_order = st.selectbox(
+            "Sort Order",
+            ["Descending (Newest First)", "Ascending (Oldest First)"],
+            key="sort_order",
+            label_visibility="collapsed",
+        )
+
         exact_date = None
         month = None
         year = None
@@ -303,6 +311,7 @@ filters = {
     "exact_date": exact_date,
     "month": month,
     "year": year,
+    "sort_order": sort_order,
 }
 
 # Apply filters for display only
