@@ -316,12 +316,7 @@ filters = {
 
 # Apply filters for display only
 display_df = apply_filters(st.session_state.df, filters)
-ascending_scheduled_date = filters["sort_order"] == "Ascending (Oldest First)"
-display_df = display_df.sort_values(
-    by="Scheduled Date",
-    ascending=ascending_scheduled_date,
-    na_position="last",
-)
+display_df = display_df.sort_values(by="Scheduled Date", ascending=False, na_position="last")
 
 # Show filtered count
 st.caption(f"Showing {len(display_df)} of {len(st.session_state.df)} total rows")
