@@ -184,6 +184,14 @@ with st.expander("Filter Options", expanded=False):
             horizontal=True, key="f_date_type",
         )
 
+        st.markdown("**Sort by Scheduled Date**")
+        sort_order = st.selectbox(
+            "Sort Order",
+            ["Descending (Newest First)", "Ascending (Oldest First)"],
+            key="f_sort_order",
+            label_visibility="collapsed",
+        )
+
         exact_date = month = year = None
         if date_filter_type == "Exact Date":
             exact_date = st.date_input("Select Date", key="f_exact_date")
@@ -216,9 +224,16 @@ filters = {
     "exact_date":       exact_date,
     "month":            month,
     "year":             year,
+    "sort_order":       sort_order,
 }
 
 display_df = apply_filters(my_df, filters)
+ascending_scheduled_date = filters["sort_order"] == "Ascending (Oldest First)"
+display_df = display_df.sort_values(
+    by="Scheduled Date",
+    ascending=ascending_scheduled_date,
+    na_position="last",
+)
 st.caption(f"Showing **{len(display_df)}** of **{len(my_df)}** orders")
 
 # ---- Read-only table ----
