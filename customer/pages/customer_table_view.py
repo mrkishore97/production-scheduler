@@ -219,6 +219,7 @@ filters = {
 }
 
 display_df = apply_filters(my_df, filters)
+display_df = display_df.sort_values(by="Scheduled Date", ascending=False, na_position="last")
 st.caption(f"Showing **{len(display_df)}** of **{len(my_df)}** orders")
 
 # ---- Read-only table ----
