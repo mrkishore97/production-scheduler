@@ -445,13 +445,13 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int) -> str:
         <table class="calendar-table">
             <thead>
                 <tr>
-                    <th>Sunday</th>
                     <th>Monday</th>
                     <th>Tuesday</th>
                     <th>Wednesday</th>
                     <th>Thursday</th>
                     <th>Friday</th>
                     <th>Saturday</th>
+                    <th>Sunday</th>
                 </tr>
             </thead>
             <tbody>
@@ -459,8 +459,6 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int) -> str:
     
     # Get the first day of the month and number of days
     first_day_weekday = datetime(year, month, 1).weekday()
-    # Adjust for Sunday being 0
-    first_day_weekday = (first_day_weekday + 1) % 7
     num_days = monthrange(year, month)[1]
     
     # Build calendar grid
