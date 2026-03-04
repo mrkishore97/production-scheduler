@@ -15,6 +15,7 @@ CUSTOMER_CALENDAR_CUSTOM_CSS = """
 def build_calendar_options(*, editable: bool, height: int) -> dict:
     return {
         "initialView": "dayGridMonth",
+        "firstDay": 1,
         "editable": editable,
         "selectable": editable,
         "height": height,
