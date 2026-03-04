@@ -26,7 +26,6 @@ from production_scheduler.customer_portal import (
     build_excel_bytes,
     df_to_calendar_events,
     generate_monthly_pdf_bytes,
-    html_to_pdf_bytes,
     generate_monthly_print_view,
     get_data_version,
     load_all_data,
@@ -124,9 +123,7 @@ for key, default in [
     ("customer_display",    ""),
     ("df_version",          0),
     ("show_print_preview",  False),
-    ("print_html",         ""),
     ("print_pdf",          b""),
-    ("print_month_name",   ""),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -257,9 +254,6 @@ with pc3:
         ).strftime("%B_%Y")
 
 if st.session_state.show_print_preview:
-    if not st.session_state.print_pdf and st.session_state.print_html:
-        st.session_state.print_pdf = html_to_pdf_bytes(st.session_state.print_html)
-
     dl_html_col, dl_pdf_col, hide_col = st.columns([1, 1, 3])
     with dl_html_col:
         st.download_button(
@@ -275,7 +269,6 @@ if st.session_state.show_print_preview:
             data=st.session_state.print_pdf,
             file_name=f"schedule_{safe_name}_{st.session_state.print_month_name}.pdf",
             mime="application/pdf",
-            help="PDF export of the same monthly print view",
         )
     with hide_col:
         if st.button("Hide Preview"):
