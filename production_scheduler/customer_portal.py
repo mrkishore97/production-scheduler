@@ -265,3 +265,11 @@ td.sold {{ background:#f8fafc; }}
 </body></html>"""
 
     return html
+
+
+def generate_monthly_pdf_bytes(df: pd.DataFrame, month: int, year: int, my_customers: list[str]) -> bytes:
+    """Build monthly print-view HTML and return equivalent PDF bytes."""
+    html = generate_monthly_print_view(df, month, year, my_customers)
+    from weasyprint import HTML
+
+    return HTML(string=html).write_pdf()
