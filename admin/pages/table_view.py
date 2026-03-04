@@ -7,11 +7,6 @@ import sys
 import pandas as pd
 import streamlit as st
 
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
 from production_scheduler.data_io import load_data, save_data
 from production_scheduler.data_processing import apply_filters, normalize_df, parse_date_to_date
 
