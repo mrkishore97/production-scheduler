@@ -63,8 +63,6 @@ This module contains:
 pip install -r requirements.txt
 ```
 
-> **PDF export note:** monthly PDF download uses `weasyprint`. On Linux, you may need system libs (for example: `libpango`, `libcairo`, `gdk-pixbuf`, and `libffi`) installed in your runtime image for PDF rendering.
-
 ### 2) Configure secrets
 
 Copy the example file and fill in real values:
