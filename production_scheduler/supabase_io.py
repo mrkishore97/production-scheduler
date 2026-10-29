@@ -27,10 +27,21 @@ class Fetched(NamedTuple):
         )
 
 
+class Meta(NamedTuple):
+    version: str  # app_meta "data_version"; "0" if there is none yet
+    saved_at: str | None  # app_meta "data_saved_at", written by save_schedule
+
+
 def read_version(client: Client) -> str:
     """The schedule's saved version (app_meta "data_version"); "0" if there is none yet."""
     resp = client.table("app_meta").select("value").eq("key", "data_version").execute()
     return str(resp.data[0]["value"]) if resp.data else "0"
+
+
+def read_meta(client: Client) -> Meta:
+    resp = client.table("app_meta").select("key,value").in_("key", ["data_version", "data_saved_at"]).execute()
+    values = {row["key"]: row["value"] for row in resp.data or []}
+    return Meta(str(values.get("data_version", "0")), values.get("data_saved_at"))
 
 
 def fetch_all_rows(client: Client, table: str, page_size: int = PAGE_SIZE) -> Fetched:

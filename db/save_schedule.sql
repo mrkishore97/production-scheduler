@@ -68,6 +68,12 @@ begin
     insert into public.app_meta (key, value) values ('data_version', next_version::text);
   end if;
 
+  -- When it was saved, shown as "last saved" in the apps.
+  update public.app_meta set value = now()::text where key = 'data_saved_at';
+  if not found then
+    insert into public.app_meta (key, value) values ('data_saved_at', now()::text);
+  end if;
+
   return next_version::text;
 end;
 $$;

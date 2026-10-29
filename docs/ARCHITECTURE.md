@@ -44,7 +44,16 @@ This document explains how the apps and shared modules work together, and where 
 
 - `admin_session.py`
   - The admin pages' shared working copy in `st.session_state` (`df`, `saved_df`, `data_version`)
-  - Load, save (with conflict/failure messages that stay on screen) and reload
+  - Every edit goes through `change()` (with Undo history); load, save, reload, discard
+  - Table edits are read from the editor's state and applied before anything is drawn
+
+- `admin_ui.py`
+  - Save bar (unsaved-change list, Save schedule, Undo, Discard, Reload latest)
+  - Orders table (filters, sorting, editor) shared by both admin pages
+  - Banner shown when someone else has saved
+
+- `live_updates.py`
+  - Periodic check for newer saves (`REFRESH_SECONDS`), time display in the viewer's time zone
 
 - `calendar_sync.py`
   - Reads drag-and-drop messages from the admin calendar and applies each one exactly once
@@ -73,12 +82,16 @@ This document explains how the apps and shared modules work together, and where 
 
 1. The admin pages load every order (with its `id`) and the schedule's `data_version`
 2. Uploads are shown as a preview first; confirming replaces the working copy
-3. Drags and table edits change the working copy, matched by `id`
-4. **Update Changes** compares the working copy with what was loaded and calls
+3. Drags and table edits change the working copy, matched by `id`. Both are applied at the
+   top of the script run, before the calendar and table are drawn, so each view shows the
+   other's edits in the same run. Calendar events carry the data revision so a drag message
+   is applied exactly once; the calendar keeps one widget key so it never loses its month
+4. **Save schedule** compares the working copy with what was loaded and calls
    `save_schedule(expected_version, upserts, deletes)` (see `db/save_schedule.sql`).
    In one transaction it checks the version, writes the changes and bumps the version;
    if the version moved on (someone else saved), nothing is written
-5. After a save the admin reloads; customer views pick up the new `data_version` on their next run
+5. After a save the admin reloads. Other open pages notice the new `data_version` within
+   `REFRESH_SECONDS`: admin pages show a banner (unsaved work is kept), customer pages redraw
 
 ### Customer read path
 

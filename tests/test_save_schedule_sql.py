@@ -86,6 +86,8 @@ def test_inserts_updates_deletes_and_bumps_version(conn):
 
     assert save(conn, "1", [dict(row("100", "2026-10-12"), id=id100)], deletes=[id102]) == "2"
     assert orders(conn) == [(id100, "100", "2026-10-12"), (id101, "101", "2026-10-10")]
+    saved_at = conn.execute("select value::timestamptz from public.app_meta where key = 'data_saved_at'").fetchone()[0]
+    assert saved_at is not None
 
 
 def test_existing_timestamp_version_keeps_counting(conn):
@@ -157,3 +159,5 @@ def test_app_meta_without_unique_key(conn):
     migrate(conn)  # running the script twice must not add a second version row
     assert conn.execute("select count(*) from public.app_meta").fetchone()[0] == 1
     assert save(conn, "0", [row("100")]) == "1"
+    assert save(conn, "1", [row("101")]) == "2"
+    assert conn.execute("select count(*) from public.app_meta").fetchone()[0] == 2  # version + saved_at

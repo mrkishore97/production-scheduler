@@ -14,7 +14,6 @@ import pytest
 from conftest import PASSWORD
 from sample_data import bulk_orders, month_day, order, to_upload_frame
 from ui import (
-    apply_table,
     calendar,
     delete_table_row,
     drag_event,
@@ -28,7 +27,6 @@ from ui import (
     open_table,
     record_moves,
     save,
-    save_on_table,
     saved_dates,
     shown_month,
     upload,
@@ -145,10 +143,12 @@ def test_more_than_1000_orders_load_completely(page, fake_db, admin_url):
 
 def test_save_refused_when_load_was_incomplete(page, fake_db, admin_url):
     """Without a way to page reliably, a partial load must never be saved over the full table."""
-    fake_db.reset(bulk_orders(1500), has_id=False)
+    next_year = month_day(1).replace(year=month_day(1).year + 1)
+    fake_db.reset([order("900", month_day(10))] + bulk_orders(1500, start=next_year), has_id=False)
     open_app(page, admin_url)
+    drag_event(page, "900", month_day(20))
     save(page)
-    assert len(fake_db.orders()) == 1500
+    assert len(fake_db.orders()) == 1501
     assert page.get_by_text("not saved", exact=False).first.is_visible()
 
 
@@ -199,7 +199,7 @@ def test_two_people_cannot_overwrite_each_other(page, fake_db, admin_url, browse
     assert saved_dates(fake_db) == {"100": [iso(12)], "101": [iso(11)]}
     assert other.get_by_text("someone else saved", exact=False).first.is_visible()
 
-    other.get_by_role("button", name="Reload latest from database").click()
+    other.get_by_role("button", name="Reload latest").click()
     wait_for_app(other, 800)
     assert working_dates(other) == {"100": [iso(12)], "101": [iso(11)]}
     drag_event(other, "101", month_day(14))
@@ -260,7 +260,6 @@ def test_table_edit_shows_on_calendar(page, fake_db, admin_url):
 
     open_table(page)
     edit_table_date(page, row=0, value=month_day(15))
-    apply_table(page)
     open_calendar(page)
 
     assert event_day(page, "100") == iso(15)
@@ -275,7 +274,6 @@ def test_drag_table_edit_drag_back(page, fake_db, admin_url):
     drag_event(page, "100", month_day(12))
     open_table(page)
     edit_table_date(page, row=0, value=month_day(15))
-    apply_table(page)
     open_calendar(page)
     assert event_day(page, "100") == iso(15)
 
@@ -292,7 +290,6 @@ def test_table_edit_survives_later_drags(page, fake_db, admin_url):
     drag_event(page, "100", month_day(12))
     open_table(page)
     edit_table_date(page, row=0, value=month_day(15))  # sorted newest first: WO 100 is the top row
-    apply_table(page)
     open_calendar(page)
 
     drag_event(page, "101", month_day(20))
@@ -328,8 +325,7 @@ def test_filtered_table_edit_leaves_hidden_orders_alone(page, fake_db, admin_url
     open_table(page)
     filter_customer(page, "Acme")
     edit_table_date(page, row=0, value=month_day(15))
-    apply_table(page)
-    save_on_table(page)
+    save(page)
 
     assert saved_dates(fake_db) == {"500": [iso(7), iso(15)], "": ["", iso(9)]}
 
@@ -340,8 +336,7 @@ def test_deleting_every_shown_row_deletes_them(page, fake_db, admin_url):
     open_table(page)
     filter_customer(page, "Acme")
     delete_table_row(page, row=0)
-    apply_table(page)
-    save_on_table(page)
+    save(page)
 
     rows = fake_db.orders()
     assert [(r["wo"], r["customer_name"]) for r in rows] == [("500", "Beta Industries")]

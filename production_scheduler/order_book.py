@@ -18,7 +18,7 @@ import pandas as pd
 from supabase import Client, PostgrestAPIError
 
 from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
-from production_scheduler.supabase_io import fetch_all_rows, read_version
+from production_scheduler.supabase_io import fetch_all_rows, read_meta
 
 ID = "id"
 TEXT_COLS = ["WO", "Quote", "PO Number", "Status", "Customer Name", "Model Description"]
@@ -191,6 +191,27 @@ def merge_edits(working: pd.DataFrame, shown_ids, edited: pd.DataFrame) -> pd.Da
     return pd.concat([kept, edited], ignore_index=True)
 
 
+def apply_table_delta(shown: pd.DataFrame, delta: dict) -> pd.DataFrame:
+    """Apply the edits ``st.data_editor`` reports in session state to the rows it was shown.
+
+    ``delta`` is {"edited_rows": {position: {column: value}}, "added_rows": [...],
+    "deleted_rows": [position, ...]}; positions refer to ``shown``'s rows. Reading
+    this before the page is drawn lets an edit reach every view in the same run.
+    """
+    df = shown.reset_index(drop=True).copy()
+    for col in ("Scheduled Date", "Completion Date"):
+        df[col] = df[col].astype(object)
+    for pos, values in (delta.get("edited_rows") or {}).items():
+        for col, value in values.items():
+            df.at[int(pos), col] = value
+    deleted = {int(p) for p in delta.get("deleted_rows") or []}
+    df = df[~df.index.isin(deleted)]
+    added = [row for row in delta.get("added_rows") or []]
+    if added:
+        df = pd.concat([df, pd.DataFrame(added, columns=df.columns)], ignore_index=True)
+    return df
+
+
 # ---------------- Loading ----------------
 
 @dataclass
@@ -199,6 +220,7 @@ class Loaded:
     uploaded_name: str | None
     version: str
     problem: str | None  # set when not every row could be read
+    saved_at: str | None = None  # when the schedule was last saved (database time)
 
 
 def frame_from_rows(rows: list[dict]) -> tuple[pd.DataFrame, str | None]:
@@ -222,11 +244,11 @@ def frame_from_rows(rows: list[dict]) -> tuple[pd.DataFrame, str | None]:
 def load(client: Client) -> Loaded:
     # Read the version first: if a save lands in between, the rows are newer
     # than the version, and the next save is refused rather than overwriting.
-    version = read_version(client)
+    meta = read_meta(client)
     fetched = fetch_all_rows(client, SUPABASE_TABLE)
     df, last_name = frame_from_rows(fetched.rows)
     problem = NO_ID_PROBLEM if fetched.rows and ID not in fetched.rows[0] else fetched.problem()
-    return Loaded(df, last_name, version, problem)
+    return Loaded(df, last_name, meta.version, problem, meta.saved_at)
 
 
 # ---------------- Comparing ----------------
@@ -276,6 +298,30 @@ def to_record(row) -> dict:
     }
 
 
+def _records(df: pd.DataFrame) -> pd.DataFrame:
+    """``to_record`` for a whole frame, indexed by id (column by column, for speed)."""
+    convert = {"Scheduled Date": _iso, "Completion Date": _iso, "Price": _number}
+    out = {}
+    for col, db in TO_DB.items():
+        values = df[col].map(convert.get(col, _text)) if col in df.columns else [None] * len(df)
+        out[db] = pd.Series(list(values), dtype=object)
+    out["wo"] = out["wo"].map(lambda v: (v or "").strip())
+    return pd.DataFrame(out).set_axis(df[ID].astype(str).tolist())
+
+
+def _differs(a: pd.DataFrame, b: pd.DataFrame) -> pd.Series:
+    """Per row: does any field differ? (None equals None.)"""
+    return ~((a == b) | (a.isna() & b.isna())).all(axis=1)
+
+
+def same_orders(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    """Do ``a`` and ``b`` hold exactly the same orders (same ids, same details)?"""
+    ra, rb = _records(a), _records(b)
+    if set(ra.index) != set(rb.index) or len(ra) != len(rb):
+        return False
+    return not _differs(rb, ra.loc[rb.index]).any()
+
+
 @dataclass
 class Changes:
     upserts: list[dict] = field(default_factory=list)  # with "id": update; without: insert
@@ -287,28 +333,56 @@ class Changes:
     def __bool__(self) -> bool:
         return bool(self.upserts or self.deletes)
 
+    def __len__(self) -> int:
+        return self.added + self.changed + self.removed
+
     def summary(self) -> str:
         return f"{self.added} added, {self.changed} changed, {self.removed} removed"
 
 
+def _split(saved: pd.DataFrame, working: pd.DataFrame):
+    old, new = _records(saved), _records(working)
+    is_added = new.index.map(is_new_id).to_numpy(dtype=bool) | ~new.index.isin(old.index)
+    kept = new[~is_added]
+    before = old.loc[kept.index]
+    changed = _differs(kept, before)
+    removed = old[~old.index.isin(new.index)]
+    return old, new[is_added], kept[changed.to_numpy()], removed
+
+
 def diff(saved: pd.DataFrame, working: pd.DataFrame, uploaded_name: str | None = None) -> Changes:
     """What has to be written so the database matches ``working``."""
-    saved_records = {str(r[ID]): to_record(r) for _, r in saved.iterrows()}
-    changes = Changes()
-    working_ids = set()
-    for _, row in working.iterrows():
-        rid = str(row[ID])
-        working_ids.add(rid)
-        record = to_record(row)
-        if is_new_id(rid) or rid not in saved_records:
-            changes.upserts.append({**record, "uploaded_name": uploaded_name or ""})
-            changes.added += 1
-        elif record != saved_records[rid]:
-            changes.upserts.append({**record, "uploaded_name": uploaded_name or "", ID: rid})
-            changes.changed += 1
-    changes.deletes = [rid for rid in saved_records if rid not in working_ids]
-    changes.removed = len(changes.deletes)
-    return changes
+    _, added, changed, removed = _split(saved, working)
+    name = uploaded_name or ""
+    return Changes(
+        upserts=[{**rec, "uploaded_name": name} for rec in added.to_dict("records")]
+        + [{**rec, "uploaded_name": name, ID: rid} for rid, rec in changed.to_dict("index").items()],
+        deletes=removed.index.tolist(),
+        added=len(added),
+        changed=len(changed),
+        removed=len(removed),
+    )
+
+
+def describe_changes(saved: pd.DataFrame, working: pd.DataFrame) -> list[dict]:
+    """Unsaved changes in words, one entry per order: {"WO", "Customer", "Change"}."""
+    old, added, changed, removed = _split(saved, working)
+
+    def show(v):
+        return "—" if v is None or v == "" else str(v)
+
+    out = []
+    for rid, rec in changed.iterrows():
+        was = old.loc[rid]
+        fields = [f"{FROM_DB[c]}: {show(was[c])} → {show(rec[c])}" for c in rec.index
+                  if not (rec[c] == was[c] or (pd.isna(rec[c]) and pd.isna(was[c])))]
+        out.append({"WO": rec["wo"], "Customer": rec["customer_name"], "Change": "; ".join(fields)})
+    for _, rec in added.iterrows():
+        out.append({"WO": rec["wo"], "Customer": rec["customer_name"],
+                    "Change": f"Added (scheduled {show(rec['scheduled_date'])})"})
+    for _, rec in removed.iterrows():
+        out.append({"WO": rec["wo"], "Customer": rec["customer_name"], "Change": "Removed"})
+    return out
 
 
 # ---------------- Saving ----------------

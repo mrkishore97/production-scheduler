@@ -81,6 +81,7 @@ def secrets_file(fake_db, tmp_path_factory) -> Path:
         f'SUPABASE_URL = "{fake_db.url}"\n'
         'SUPABASE_KEY = "fake.test.key"\n'
         f'UPDATE_PASSWORD = "{PASSWORD}"\n'
+        'REFRESH_SECONDS = 2\n'
         "\n[customers.acme]\n"
         'password = "acme-pass"\n'
         'customer_names = ["Acme Corp"]\n'

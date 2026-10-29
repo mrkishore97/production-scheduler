@@ -14,8 +14,8 @@ All apps share a single Supabase data source and a common set of reusable module
 
 ```text
 admin/
-  app.py                         # Admin calendar app (editable)
-  pages/table_view.py            # Admin tabular editor
+  app.py                         # Admin Schedule page: calendar + orders table, one working copy
+  pages/table_view.py            # Full-page orders table (same working copy)
 customer/
   customer_app.py                # Username/password customer portal
   customer_specific_app.py       # Tokenized customer portal
@@ -25,7 +25,9 @@ production_scheduler/
   status.py                      # Shared status normalization + colors
   calendar_ui.py                 # Shared calendar options + CSS presets
   order_book.py                  # Loading, cleaning, comparing and saving orders
-  admin_session.py               # The admin pages' shared working copy (load/save/reload)
+  admin_session.py               # The admin pages' shared working copy (edit/undo/save/reload)
+  admin_ui.py                    # Admin page pieces: save bar, orders table, update banner
+  live_updates.py                # Checking for saves made elsewhere; time display
   calendar_sync.py               # Applies calendar drag-and-drop to the working data
   supabase_io.py                 # Reads whole tables page by page
   feedback.py                    # Messages that survive a page re-run
@@ -87,8 +89,10 @@ again later is harmless.
 
 It creates the `save_schedule` function the admin pages save through. Each save
 then writes only the orders that changed, all in one transaction, and is
-refused if someone else saved after you loaded the schedule. Until it has been
-run, the admin pages show a message instead of saving.
+refused if someone else saved after you loaded the schedule. It also records
+when the schedule was last saved, which the pages show. Until it has been run,
+the admin pages show a message instead of saving. If you ran an earlier version
+of the script, run this one again.
 
 ### 4) Run apps
 
@@ -141,11 +145,20 @@ Expected canonical fields used across apps:
 
 ## Operational Notes
 
-- Admin edits are saved to Supabase and reflected in customer views.
-- Saving sends only the changed orders through `save_schedule`; if another admin saved first,
-  the save is refused and nothing is written. Use **Reload latest from database** to continue.
+- **One working copy.** The Schedule page shows the calendar above the orders table.
+  A drag shows up in the table, and a table edit (committed with Enter or by leaving
+  the cell) shows up on the calendar, straight away; the shown month and the table
+  filters stay as they are. The **table view** page edits the same copy.
+- **Saving.** The save bar counts unsaved changes and lists them. **Save schedule**
+  asks for the password once per session and sends only the changed orders through
+  `save_schedule`; if another admin saved first, the save is refused and nothing is
+  written. **Undo** steps back through edits, **Discard changes** returns to the saved
+  schedule (and can be undone), and **Reload latest** fetches the saved schedule.
+- **Saves made elsewhere.** Open pages check every `REFRESH_SECONDS` (30 by default) for
+  a newer save. Admin pages show a banner and never reload by themselves, so unsaved
+  work is kept; customer pages redraw with the new schedule automatically.
 - Uploading a spreadsheet shows a preview (new, changed, removed and duplicate WOs) before it
-  replaces the working schedule; nothing is saved until **Update Changes**.
+  replaces the working schedule; nothing is saved until **Save schedule**.
 - Customer portals are intentionally read-only.
 - Status color rendering is normalized through `production_scheduler/status.py`.
 - Customer apps cache Supabase reads (`@st.cache_data(ttl=300)`) to reduce load.

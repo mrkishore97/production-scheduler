@@ -154,3 +154,45 @@ def test_save_without_database_function(fake_db, client):
     with pytest.raises(ob.SaveSetupMissing):
         ob.save(client, ob.diff(loaded.df, loaded.df.iloc[0:0]), loaded.version)
     assert len(fake_db.orders()) == 1
+
+
+# ---------- table edits as reported by st.data_editor ----------
+
+def test_apply_table_delta_edits_adds_and_deletes():
+    shown = frame(("1", "100", "Acme", D5), ("2", "101", "Beta", D7))
+    delta = {
+        "edited_rows": {1: {"Scheduled Date": "2026-10-15", "Customer Name": "Beta Ltd"}},
+        "added_rows": [{"WO": "102", "Scheduled Date": "2026-10-09"}],
+        "deleted_rows": [0],
+    }
+    out = ob.clean_rows(ob.apply_table_delta(shown, delta))
+    assert list(out["WO"]) == ["101", "102"]
+    assert list(out["Scheduled Date"]) == [D15, D9]
+    assert out.iloc[0]["Customer Name"] == "Beta Ltd"
+    assert out.iloc[0]["id"] == "2" and pd.isna(out.iloc[1]["id"])
+
+
+def test_apply_table_delta_accepts_string_positions():
+    shown = frame(("1", "100", "Acme", D5))
+    out = ob.apply_table_delta(shown, {"edited_rows": {"0": {"WO": "200"}}, "added_rows": [], "deleted_rows": []})
+    assert list(out["WO"]) == ["200"]
+
+
+def test_same_orders_counts_unsaved_new_rows_as_equal():
+    a = frame(("1", "100", "Acme", D5), ("new-1", "101", "Beta", D7))
+    assert ob.same_orders(a, a.copy())
+    b = a.copy()
+    b.loc[1, "Scheduled Date"] = D9
+    assert not ob.same_orders(a, b)
+    assert not ob.same_orders(a, a.iloc[:1])
+
+
+def test_describe_changes():
+    saved = frame(("1", "100", "Acme", D5), ("2", "101", "Beta", D7))
+    working = frame(("1", "100", "Acme", D15), ("new-1", "102", "Gamma", D9))
+    described = {d["WO"]: d["Change"] for d in ob.describe_changes(saved, working)}
+    assert described == {
+        "100": "Scheduled Date: 2026-10-05 → 2026-10-15",
+        "102": "Added (scheduled 2026-10-09)",
+        "101": "Removed",
+    }

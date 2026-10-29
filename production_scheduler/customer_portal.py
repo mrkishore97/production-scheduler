@@ -10,7 +10,7 @@ from supabase import Client, create_client
 from production_scheduler.config import SUPABASE_TABLE
 from production_scheduler.order_book import ID, frame_from_rows
 from production_scheduler.status import SOLD_COLORS, normalize_status_key, status_to_colors
-from production_scheduler.supabase_io import fetch_all_rows, read_version
+from production_scheduler.supabase_io import Meta, fetch_all_rows, read_meta, read_version
 
 INCOMPLETE_DATA_WARNING = "Some orders could not be loaded. Please refresh the page; if this keeps happening, contact your administrator."
 
@@ -26,6 +26,14 @@ def get_data_version() -> str:
         return read_version(get_supabase())
     except Exception:
         return "0"
+
+
+def get_schedule_meta() -> Meta:
+    """The saved version and when it was saved — never cached."""
+    try:
+        return read_meta(get_supabase())
+    except Exception:
+        return Meta("0", None)
 
 
 @st.cache_data(ttl=300)

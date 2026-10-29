@@ -107,19 +107,30 @@ def upload(page, path, confirm: bool = True) -> None:
 
 
 def save(page, password: str = PASSWORD) -> None:
-    """Enter the password and click Update Changes on the calendar page."""
+    """Click Save schedule in the save bar, entering the password if it is asked for."""
+    wait_for_app(page, settle_ms=200)
     field = page.get_by_label("Password", exact=True)
-    if not field.is_visible():
-        page.get_by_text("Update Changes (Password Protected)").click()
-    field.fill(password)
-    page.get_by_role("button", name="Update Changes").click()
+    if field.count() and field.is_visible():
+        field.fill(password)
+    page.get_by_role("button", name="Save schedule").click()
     wait_for_app(page, settle_ms=800)
+
+
+def click(page, name: str) -> None:
+    page.get_by_role("button", name=name).click()
+    wait_for_app(page, settle_ms=600)
+
+
+def pending_text(page) -> str:
+    """The save bar's summary line, e.g. "⚠️ 2 unsaved changes (...)"."""
+    return page.get_by_text(re.compile(r"unsaved change")).first.inner_text()
 
 
 def working_dates(page) -> dict[str, list[str]]:
     """Scheduled dates in the app's working data, read from the Download XLSX button."""
     with page.expect_download() as info:
         page.get_by_role("button", name="Download XLSX").click()
+    wait_for_app(page, settle_ms=200)  # a download button re-runs the page
     frame = pd.read_excel(info.value.path(), dtype={"WO": str})
     out: dict[str, list[str]] = {}
     for wo, d in zip(frame["WO"].fillna(""), frame["Scheduled Date"]):
@@ -134,7 +145,7 @@ def saved_dates(db) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
-# ---------- table page ----------
+# ---------- orders table ----------
 TABLE_COLUMNS = [
     "WO", "Quote", "PO Number", "Status", "Customer Name",
     "Model Description", "Scheduled Date", "Completion Date", "Price",
@@ -144,7 +155,7 @@ TABLE_COLUMNS = [
 def open_table(page) -> None:
     page.get_by_role("link", name="table view").click()
     wait_for_app(page, 800)
-    page.locator("[data-testid='stDataFrame']").first.wait_for()
+    grid(page).wait_for()
 
 
 def open_calendar(page) -> None:
@@ -153,15 +164,40 @@ def open_calendar(page) -> None:
     calendar(page).locator(".fc-daygrid-body, .fc-list").first.wait_for()
 
 
+def grid(page):
+    """The orders table on whichever admin page is open."""
+    return page.locator("[class*='st-key-orders_table'] [data-testid='stDataFrame']").first
+
+
+def _cell(page, row: int) -> tuple[float, float]:
+    """Left edge and vertical centre of a table row (the grid itself, not its toolbar)."""
+    g = grid(page).locator("[data-testid='stDataFrameResizable']").first
+    g.scroll_into_view_if_needed()
+    box = g.bounding_box()
+    return box["x"], box["y"] + 35 + 17 + 35 * row
+
+
+def _select_top_left_cell(page) -> None:
+    """Select the WO cell of the top row. (Right after a download, the table's
+    first click only takes focus, so click until a cell is selected.)"""
+    x, y = _cell(page, 0)
+    selected = page.locator("[id='glide-cell-1-0'][aria-selected='true']")
+    for _ in range(3):
+        page.mouse.click(x + 60, y)
+        try:
+            selected.wait_for(state="attached", timeout=1500)  # the accessible copy is hidden
+            return
+        except Exception:
+            pass
+    raise AssertionError("could not select a table cell")
+
+
 def edit_table_date(page, row: int, value: date, column: str = "Scheduled Date") -> None:
-    """Type a new date into a cell of the (canvas-drawn) table, using the keyboard.
+    """Type a new date into a cell of the (canvas-drawn) table and commit it with Enter.
 
     ``row`` counts from the top of the table as currently sorted.
     """
-    grid = page.locator("[data-testid='stDataFrame']").first
-    grid.scroll_into_view_if_needed()
-    box = grid.bounding_box()
-    page.mouse.click(box["x"] + 60, box["y"] + 35 + 17)  # first data cell: WO, top row
+    _select_top_left_cell(page)
     for _ in range(TABLE_COLUMNS.index(column)):
         page.keyboard.press("ArrowRight")
     for _ in range(row):
@@ -170,12 +206,29 @@ def edit_table_date(page, row: int, value: date, column: str = "Scheduled Date")
     field = page.locator("input[type='date']").first
     field.fill(value.isoformat())
     field.press("Enter")
-    page.wait_for_timeout(300)
-
-
-def apply_table(page) -> None:
-    page.get_by_role("button", name="Apply Changes").click()
     wait_for_app(page, 800)
+
+
+def delete_table_row(page, row: int) -> None:
+    """Select a table row by its left-hand marker and delete it."""
+    x, y = _cell(page, row)
+    page.mouse.click(x + 18, y)
+    page.keyboard.press("Delete")
+    wait_for_app(page, 800)
+
+
+def table_rows(page) -> list[dict]:
+    """What the table currently shows, read through its own "Download as CSV" button."""
+    g = grid(page)
+    g.scroll_into_view_if_needed()
+    g.hover()
+    # Without the browser's save-file dialog, the table falls back to an ordinary download.
+    page.evaluate("() => { window.showSaveFilePicker = undefined; }")
+    button = page.locator("[data-testid='stElementToolbar'] button[aria-label='Download as CSV']").first
+    with page.expect_download() as info:
+        button.dispatch_event("click")  # the toolbar overlaps the grid, so click it directly
+    page.mouse.move(0, 0)
+    return pd.read_csv(info.value.path(), dtype=str).fillna("").to_dict("records")
 
 
 def event_day(page, wo: str) -> str:
@@ -183,28 +236,13 @@ def event_day(page, wo: str) -> str:
     return event(page, wo).first.evaluate("e => e.closest('td[data-date]').getAttribute('data-date')")
 
 
-def filter_customer(page, text: str) -> None:
+def open_filters(page) -> None:
     page.get_by_text("Filter Options").click()
+
+
+def filter_customer(page, text: str) -> None:
+    open_filters(page)
     field = page.get_by_label("Customer", exact=True)
     field.fill(text)
     field.press("Enter")
     wait_for_app(page, 800)
-
-
-def delete_table_row(page, row: int) -> None:
-    """Select a table row by its left-hand marker and delete it."""
-    grid = page.locator("[data-testid='stDataFrame']").first
-    grid.scroll_into_view_if_needed()
-    box = grid.bounding_box()
-    page.mouse.click(box["x"] + 18, box["y"] + 35 + 17 + 35 * row)
-    page.keyboard.press("Delete")
-    page.wait_for_timeout(300)
-
-
-def save_on_table(page, password: str = PASSWORD) -> None:
-    field = page.get_by_label("Password", exact=True)
-    if not field.is_visible():
-        page.get_by_text("Password Protected Update").click()
-    field.fill(password)
-    page.get_by_role("button", name="Update Changes").click()
-    wait_for_app(page, settle_ms=800)

@@ -15,7 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from production_scheduler import admin_session, order_book
+from production_scheduler import admin_session, admin_ui, order_book
 from production_scheduler.calendar_sync import apply_drag, parse_event_change
 from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
 from production_scheduler.feedback import flash
@@ -27,7 +27,8 @@ st.set_page_config(page_title="Order Book Calendar", layout="wide")
 
 # ---------------- Helpers ----------------
 
-def df_to_calendar_events(df: pd.DataFrame):
+def df_to_calendar_events(df: pd.DataFrame, rev: int):
+    """Calendar events; ``rev`` (the data revision) lets each drag be applied only once."""
     events = []
     for _, r in df.iterrows():
         wo = str(r.get("WO", "")).strip()
@@ -48,7 +49,7 @@ def df_to_calendar_events(df: pd.DataFrame):
             "start": d.isoformat(), "allDay": True,
             **status_to_colors(status),
             "extendedProps": {"wo": wo, "customer_name": cust,
-                              "model_description": model, "status": status},
+                              "model_description": model, "status": status, "rev": rev},
         })
     return events
 
@@ -363,17 +364,21 @@ if "show_print_preview" not in st.session_state:
     st.session_state.show_print_preview = False
 
 
-# ---------------- Calendar drag & drop ----------------
-# Apply a drop before anything is drawn, so this run already shows the new
-# date everywhere. (Drawing the calendar from the old data first made dropped
-# events jump back to their old day for a moment.) The key changes whenever the
-# data is changed another way, which starts the drag history afresh.
-calendar_key = f"calendar_{st.session_state.df_version}"
-drag = parse_event_change(st.session_state.get(calendar_key))
-if drag and drag.signature(calendar_key) != st.session_state.last_applied_change:
-    st.session_state.last_applied_change = drag.signature(calendar_key)
-    if apply_drag(st.session_state.df, drag):
-        st.session_state.has_unsaved_changes = True
+# ---------------- Apply edits before drawing ----------------
+# Table edits and calendar drops are applied before anything is drawn, so the
+# calendar and the table both show every edit in the same run. (Drawing the
+# calendar from the old data first made dropped events jump back for a moment.)
+# The calendar keeps one key for good: a new key would rebuild it and lose the
+# month being shown.
+CALENDAR_KEY = "calendar"
+admin_session.fold_table_edits("schedule")
+
+drag = parse_event_change(st.session_state.get(CALENDAR_KEY))
+if drag and drag.signature() != st.session_state.last_applied_change:
+    st.session_state.last_applied_change = drag.signature()
+    moved = st.session_state.df.copy()
+    if apply_drag(moved, drag):
+        admin_session.change(moved)
         st.toast(f"WO {drag.wo or '(none)'} moved to {drag.new_date:%a %b %d, %Y}")
     if drag.view_date:
         st.session_state.calendar_view = {"date": drag.view_date.isoformat(), "view": drag.view_type}
@@ -407,7 +412,7 @@ with st.sidebar:
             else:
                 st.error("❌ Incorrect password. Data not cleared.")
 
-    st.caption("Use Streamlit's left sidebar page selector to open **Table View**.")
+    st.caption("Open **table view** in the page list for a full-page table.")
 
 
 # An upload is only a proposal until it is confirmed in the import preview below.
@@ -433,9 +438,10 @@ if file is not None:
         st.exception(e)
 
 
-# ---------------- Calendar ----------------
-st.title("📅 Production Schedule Calendar")
+# ---------------- Page ----------------
+st.title("📅 Production Schedule")
 admin_session.show_status()
+admin_ui.newer_version_banner("schedule")
 
 pending = st.session_state.pending_import
 if pending:
@@ -444,7 +450,7 @@ if pending:
         st.subheader(f"📥 Import {pending['name']}?")
         st.write(
             f"The file has **{preview.rows}** orders. Importing **replaces the whole working schedule** "
-            "with the file. Nothing is saved to the database until you click **Update Changes**."
+            "with the file. Nothing is saved to the database until you click **Save schedule**."
         )
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("New WOs", len(preview.new))
@@ -460,20 +466,20 @@ if pending:
                     st.write(f"**{label}:** " + ", ".join(wos))
         c1, c2 = st.columns(2)
         if c1.button("Replace schedule with this file", type="primary"):
-            st.session_state.df = pending["df"]
+            admin_session.change(pending["df"])
             st.session_state.last_uploaded_name = pending["name"]
             st.session_state.last_uploaded_signature = pending["signature"]
             st.session_state.pending_import = None
-            st.session_state.df_version += 1
-            st.session_state.has_unsaved_changes = True
-            flash(f"Loaded {len(pending['df'])} rows. Click 'Update Changes' below to save to database.")
+            flash(f"Loaded {len(pending['df'])} rows. Click **Save schedule** to save them to the database.")
             st.rerun()
         if c2.button("Cancel import"):
             st.session_state.last_uploaded_signature = pending["signature"]
             st.session_state.pending_import = None
             st.rerun()
 
-events = df_to_calendar_events(st.session_state.df)
+admin_ui.save_bar("schedule")
+
+events = df_to_calendar_events(st.session_state.df, st.session_state.data_rev)
 
 # Only drops are reported back. Other calendar messages (clicks, event loads)
 # would each re-run the whole page for nothing.
@@ -487,37 +493,12 @@ calendar(
     ),
     custom_css=ADMIN_CALENDAR_CUSTOM_CSS,
     callbacks=["eventChange"],
-    key=f"calendar_{st.session_state.df_version}",
+    key=CALENDAR_KEY,
 )
 
-# ---------------- Update Changes (Password Protected) ----------------
-if st.session_state.has_unsaved_changes:
-    st.warning("⚠️ You have unsaved changes. Click 'Update Changes' below to save to database.")
-
-with st.expander(
-    "🔐 Update Changes (Password Protected)",
-    expanded=st.session_state.has_unsaved_changes or bool(st.session_state.save_error),
-):
-    st.write("Enter the password to save your changes to the Supabase database.")
-    
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        password = st.text_input("Password", type="password", key="update_password")
-    with col_b:
-        update_btn = st.button("✅ Update Changes", type="primary", use_container_width=True)
-    
-    if update_btn:
-        correct_password = st.secrets.get("UPDATE_PASSWORD", "admin123")  # Default fallback
-
-        if password == correct_password:
-            with st.spinner("Saving changes to database..."):
-                saved = admin_session.save()
-            if not saved:
-                st.error(st.session_state.save_error)
-        else:
-            st.error("❌ Incorrect password. Changes not saved.")
-
-    admin_session.reload_button(key="reload_calendar")
+# ---------------- Orders table ----------------
+st.subheader("🧾 Orders")
+admin_ui.orders_table("schedule")
 
 st.divider()
 
@@ -528,7 +509,7 @@ with col2:
     total_value = st.session_state.df["Price"].dropna().sum() if "Price" in st.session_state.df else 0
     st.metric("Total value", f"${total_value:,.2f}")
 with col3:
-    st.caption("Drag & drop an event to change Scheduled Date. Edit rows in Table View.")
+    st.caption("Drag an event to change its Scheduled Date, or edit the table; both stay in step.")
 
 st.caption("Status colors: 🔵 Open  🟠 In Progress  🟢 Completed  ⚫ On Hold  🔴 Cancelled")
 

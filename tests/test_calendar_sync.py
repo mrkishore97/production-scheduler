@@ -5,12 +5,13 @@ import pandas as pd
 from production_scheduler.calendar_sync import apply_drag, parse_event_change
 
 
-def message(event_id="7", old="2026-10-10", new="2026-10-12", view=None, wo="100"):
+def message(event_id="7", old="2026-10-10", new="2026-10-12", view=None, wo="100", rev=3):
+    props = {"wo": wo, "rev": rev}
     return {
         "callback": "eventChange",
         "eventChange": {
-            "oldEvent": {"id": event_id, "start": old, "allDay": True, "extendedProps": {"wo": wo}},
-            "event": {"id": event_id, "start": new, "allDay": True, "extendedProps": {"wo": wo}},
+            "oldEvent": {"id": event_id, "start": old, "allDay": True, "extendedProps": props},
+            "event": {"id": event_id, "start": new, "allDay": True, "extendedProps": props},
             "relatedEvents": [],
             "view": view
             or {
@@ -48,14 +49,16 @@ def test_view_date_stays_in_shown_month_for_any_time_zone():
 
 
 def test_same_message_has_same_signature_but_new_drag_back_does_not():
-    first = parse_event_change(message(old="2026-10-10", new="2026-10-12"))
-    repeat = parse_event_change(message(old="2026-10-10", new="2026-10-12"))
-    assert first.signature("calendar_0") == repeat.signature("calendar_0")
-    # After the data changed another way (new calendar key), the same move is a new drag.
-    assert first.signature("calendar_0") != repeat.signature("calendar_1")
+    first = parse_event_change(message(old="2026-10-10", new="2026-10-12", rev=3))
+    repeat = parse_event_change(message(old="2026-10-10", new="2026-10-12", rev=3))
+    assert first.signature() == repeat.signature()
+    # After the data changed another way, events are redrawn with a newer
+    # revision, so the same move is a new drag.
+    again = parse_event_change(message(old="2026-10-10", new="2026-10-12", rev=5))
+    assert again.signature() != first.signature()
     # Moving back later has a different old date, so it is a new drag too.
-    back = parse_event_change(message(old="2026-10-15", new="2026-10-12"))
-    assert back.signature("calendar_0") != first.signature("calendar_0")
+    back = parse_event_change(message(old="2026-10-15", new="2026-10-12", rev=3))
+    assert back.signature() != first.signature()
 
 
 def test_apply_drag_sets_date_once():

@@ -13,7 +13,13 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from production_scheduler.customer_portal import INCOMPLETE_DATA_WARNING, get_data_version, load_all_data
+from production_scheduler.customer_portal import (
+    INCOMPLETE_DATA_WARNING,
+    get_data_version,
+    get_schedule_meta,
+    load_all_data,
+)
+from production_scheduler.live_updates import format_time, watch_for_updates
 
 
 def apply_filters(df, filters):
@@ -120,7 +126,9 @@ with st.sidebar:
         st.rerun()
 
 # ---- Load & filter to this user's customers ----
-_version = get_data_version()
+_meta = get_schedule_meta()
+_version = _meta.version
+watch_for_updates(get_data_version, _version)  # redraw soon after the schedule is saved
 df_all, all_loaded = load_all_data(data_version=_version)
 if not all_loaded:
     st.warning(INCOMPLETE_DATA_WARNING)
@@ -132,6 +140,8 @@ my_df  = df_all[
 
 st.title(f"🧾 My Orders — {customer_display}")
 st.caption("Read-only view of your orders. Contact your admin for any changes.")
+if format_time(_meta.saved_at):
+    st.caption(f"Schedule last updated {format_time(_meta.saved_at)}.")
 
 if my_df.empty:
     st.warning(f"No orders found for **{customer_display}**.")

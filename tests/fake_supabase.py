@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl, urlparse
 
@@ -170,7 +171,8 @@ class Handler(BaseHTTPRequestHandler):
         self._latency()
         p = dict(params)
         with DB.lock:
-            DB.reads[table] = DB.reads.get(table, 0) + 1
+            for name in (table, f"{table}?select={p.get('select', '*')}"):  # per table, and per query shape
+                DB.reads[name] = DB.reads.get(name, 0) + 1
             rows = [dict(r) for r in DB.tables.get(table, []) if _matches(r, self._filters(params))]
             order = p.get("order")
             if order:
@@ -253,6 +255,12 @@ class Handler(BaseHTTPRequestHandler):
                 DB.tables["app_meta"].append({"key": "data_version", "value": version})
             else:
                 meta["value"] = version
+            saved_at = datetime.now(timezone.utc).isoformat(sep=" ")
+            stamp = next((r for r in DB.tables["app_meta"] if r.get("key") == "data_saved_at"), None)
+            if stamp is None:
+                DB.tables["app_meta"].append({"key": "data_saved_at", "value": saved_at})
+            else:
+                stamp["value"] = saved_at
             DB.saves += 1
         self._send(200, version)
 

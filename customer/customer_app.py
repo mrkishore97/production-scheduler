@@ -17,8 +17,10 @@ from production_scheduler.customer_portal import (
     df_to_calendar_events,
     generate_monthly_print_view,
     get_data_version,
+    get_schedule_meta,
     load_all_data,
 )
+from production_scheduler.live_updates import format_time, watch_for_updates
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Customer Order Portal", layout="wide")
@@ -164,7 +166,9 @@ if not st.session_state.authenticated:
 my_customers: list[str] = st.session_state.logged_in_customers
 customer_display: str   = st.session_state.customer_display
 
-_version = get_data_version()
+_meta = get_schedule_meta()
+_version = _meta.version
+watch_for_updates(get_data_version, _version)  # redraw soon after the schedule is saved
 df_all, all_loaded = load_all_data(data_version=_version)
 if not all_loaded:
     st.warning(INCOMPLETE_DATA_WARNING)
@@ -199,6 +203,8 @@ st.caption(
     f"Showing orders for **{customer_display}**.  "
     "Gray **SOLD** blocks are dates already taken by other customers."
 )
+if format_time(_meta.saved_at):
+    st.caption(f"Schedule last updated {format_time(_meta.saved_at)}.")
 
 # ---- Calendar ----
 events = df_to_calendar_events(df_all, my_customers)

@@ -1,10 +1,11 @@
 """Turning calendar drag-and-drop messages into changes to the working data.
 
 The calendar component hands back its *last* message on every rerun, not just
-once, so each drag must be applied once and then ignored. A drag is identified
-by the calendar it came from (its widget key, which changes whenever the data
-is changed another way) plus the event's old and new dates. A repeat of the
-same message is skipped; a new drag, even back to a date used before, is applied.
+once, so each drag must be applied once and then ignored. Every event carries
+the data revision it was drawn from (``extendedProps.rev``); a drag is
+identified by that revision plus the event's id and its old and new dates. A
+repeat of the same message is skipped, while a new drag, even back to a date
+used before, comes from a newer revision and is applied.
 """
 
 from dataclasses import dataclass
@@ -17,14 +18,15 @@ import pandas as pd
 class DragChange:
     event_id: str  # the order's row id
     wo: str
+    rev: str  # data revision the dragged event was drawn from
     old_start: str
     new_start: str
     new_date: date
     view_type: str | None = None
     view_date: date | None = None  # a day inside the period the calendar was showing
 
-    def signature(self, calendar_key: str) -> tuple:
-        return (calendar_key, self.event_id, self.old_start, self.new_start)
+    def signature(self) -> tuple:
+        return (self.event_id, self.rev, self.old_start, self.new_start)
 
 
 def parse_event_change(state) -> DragChange | None:
@@ -42,6 +44,7 @@ def parse_event_change(state) -> DragChange | None:
     return DragChange(
         event_id=event_id,
         wo=str((new.get("extendedProps") or {}).get("wo", "")),
+        rev=str((old.get("extendedProps") or {}).get("rev", "")),
         old_start=str(old.get("start", "")),
         new_start=str(new.get("start")),
         new_date=new_dt.date(),

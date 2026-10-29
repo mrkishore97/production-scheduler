@@ -22,11 +22,14 @@ def test_clicking_an_event_does_not_reload_the_page(page, fake_db, customer_url)
     fake_db.reset([order("100", month_day(10)), order("200", month_day(12), customer="Beta Industries")])
     open_portal(page, customer_url)
 
-    before = fake_db.reads("app_meta")
+    # A full page run reads the schedule's version and save time together; the
+    # background check for newer saves reads only the version, so it isn't counted.
+    full_runs = "app_meta?select=key,value"
+    before = fake_db.reads(full_runs)
     calendar(page).locator(".fc-event").first.click()
     calendar(page).locator("td.fc-daygrid-day").nth(20).click()
     wait_for_app(page, 800)
-    assert fake_db.reads("app_meta") == before
+    assert fake_db.reads(full_runs) == before
 
 
 def test_more_than_1000_orders_are_shown(page, fake_db, customer_url):
