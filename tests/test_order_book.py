@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pandas as pd
@@ -196,3 +197,19 @@ def test_describe_changes():
         "102": "Added (scheduled 2026-10-09)",
         "101": "Removed",
     }
+
+
+def test_blank_prices_and_dates_are_sent_as_nulls():
+    working = frame(("new-1", "100", "Acme", None), ("new-2", "101", "Acme", D5))
+    working["Price"] = [float("nan"), 2.5]
+    changes = ob.diff(ob.empty_frame(), working)
+    json.dumps(changes.upserts, allow_nan=False)  # raises on NaN
+    assert [(u["price"], u["scheduled_date"]) for u in changes.upserts] == [(None, None), (2.5, "2026-10-05")]
+
+
+def test_save_never_sends_nan(fake_db, client):
+    fake_db.reset([])
+    loaded = ob.load(client)
+    changes = ob.Changes(upserts=[dict(ob.to_record(frame(("new-1", "100", "Acme", D5)).iloc[0]), price=float("nan"))], added=1)
+    ob.save(client, changes, loaded.version)
+    assert fake_db.orders()[0]["price"] is None

@@ -10,6 +10,7 @@ Saving sends only what changed since the orders were loaded, through the
 whole save in one transaction and refuses it if someone else saved first.
 """
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -303,8 +304,10 @@ def _records(df: pd.DataFrame) -> pd.DataFrame:
     convert = {"Scheduled Date": _iso, "Completion Date": _iso, "Price": _number}
     out = {}
     for col, db in TO_DB.items():
-        values = df[col].map(convert.get(col, _text)) if col in df.columns else [None] * len(df)
-        out[db] = pd.Series(list(values), dtype=object)
+        fn = convert.get(col, _text)
+        # A plain list keeps None as None; Series.map would turn a blank price into NaN.
+        values = [fn(v) for v in df[col].tolist()] if col in df.columns else [None] * len(df)
+        out[db] = pd.Series(values, dtype=object)
     out["wo"] = out["wo"].map(lambda v: (v or "").strip())
     return pd.DataFrame(out).set_axis(df[ID].astype(str).tolist())
 
@@ -387,6 +390,13 @@ def describe_changes(saved: pd.DataFrame, working: pd.DataFrame) -> list[dict]:
 
 # ---------------- Saving ----------------
 
+def _json_value(value):
+    """JSON has no NaN or infinity; send a blank (null) instead."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def save(client: Client, changes: Changes, expected_version: str) -> str:
     """Write ``changes`` in one transaction; return the new version.
 
@@ -394,10 +404,11 @@ def save(client: Client, changes: Changes, expected_version: str) -> str:
     ``expected_version``, and SaveSetupMissing if db/save_schedule.sql hasn't
     been run. Nothing is written in either case.
     """
+    upserts = [{k: _json_value(v) for k, v in row.items()} for row in changes.upserts]
     try:
         resp = client.rpc(
             "save_schedule",
-            {"expected_version": expected_version, "upserts": changes.upserts, "deletes": changes.deletes},
+            {"expected_version": expected_version, "upserts": upserts, "deletes": changes.deletes},
         ).execute()
     except PostgrestAPIError as err:
         if err.code == CONFLICT_CODE:

@@ -229,6 +229,21 @@ def test_import_preview_then_replace(page, fake_db, admin_url, tmp_path):
     assert saved_dates(fake_db) == {"100": [iso(15)], "102": [iso(5)], "103": [iso(6), iso(7)]}
 
 
+def test_import_with_blank_prices_and_dates_saves(page, fake_db, admin_url, tmp_path):
+    """Real order books have orders without a price or a date yet."""
+    fake_db.reset([order("100", month_day(10))])
+    open_app(page, admin_url)
+    sheet = tmp_path / "blanks.xlsx"
+    to_upload_frame([order("200", month_day(5), price=None), order("201", None, price=None),
+                     order("202", month_day(6), price=1500.0)]).to_excel(sheet, index=False)
+    upload(page, sheet)
+    save(page)
+
+    assert page.get_by_text("Saving failed", exact=False).count() == 0
+    saved = {r["wo"]: (r["scheduled_date"], r["price"]) for r in fake_db.orders()}
+    assert saved == {"200": (iso(5), None), "201": (None, None), "202": (iso(6), 1500.0)}
+
+
 def test_cancelled_import_changes_nothing(page, fake_db, admin_url, tmp_path):
     fake_db.reset([order("100", month_day(10))])
     open_app(page, admin_url)

@@ -64,9 +64,8 @@ def save_bar(where: str) -> None:
             if ss.unlocked or password == st.secrets.get("UPDATE_PASSWORD", "admin123"):
                 ss.unlocked = True
                 with st.spinner("Saving changes to database..."):
-                    ok = admin_session.save()
-                if not ok:
-                    st.error(ss.save_error)
+                    admin_session.save()
+                st.rerun()  # failed: show the error once, at the top of the page
             else:
                 st.error("❌ Incorrect password. Changes not saved.")
         if undo_clicked:
