@@ -24,7 +24,11 @@ production_scheduler/
   config.py                      # Shared constants (columns/table name)
   status.py                      # Shared status normalization + colors
   calendar_ui.py                 # Shared calendar options + CSS presets
+  calendar_sync.py               # Applies calendar drag-and-drop to the working data
+  supabase_io.py                 # Reads whole tables page by page
+  feedback.py                    # Messages that survive a page re-run
   customer_portal.py             # Shared customer portal data/event/export logic
+tests/                           # Unit and browser tests (see "Running the tests")
 docs/
   ARCHITECTURE.md                # Detailed architecture and data flow
 .streamlit/
@@ -94,6 +98,7 @@ streamlit run customer/customer_specific_app.py
 
 Expected canonical fields used across apps:
 
+- `id` (primary key; used to read the table page by page)
 - `wo`
 - `quote`
 - `po_number`
@@ -101,6 +106,7 @@ Expected canonical fields used across apps:
 - `customer_name`
 - `model_description`
 - `scheduled_date`
+- `completion_date`
 - `price`
 - `uploaded_name`
 
@@ -124,6 +130,41 @@ Expected canonical fields used across apps:
 - Customer portals are intentionally read-only.
 - Status color rendering is normalized through `production_scheduler/status.py`.
 - Customer apps cache Supabase reads (`@st.cache_data(ttl=300)`) to reduce load.
+
+---
+
+## Running the tests
+
+The tests start the real apps against an in-memory stand-in for Supabase
+(`tests/fake_supabase.py`) and drive them in a headless Chromium browser. They
+never read your `.streamlit/secrets.toml` or touch your real database.
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+```bash
+playwright install chromium
+```
+
+```bash
+pytest
+```
+
+To run only the fast tests that don't need a browser:
+
+```bash
+pytest -m "not e2e"
+```
+
+Tests marked `xfail` describe known defects that later repair steps fix.
+
+To make a test spreadsheet for manual testing (duplicate WOs, blank WOs and
+more than 1,000 rows included):
+
+```bash
+python tests/sample_data.py --rows 1500 --out sample_order_book.xlsx
+```
 
 ---
 

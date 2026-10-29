@@ -1,11 +1,20 @@
 # admin/pages/table_view.py
 
 import re
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from production_scheduler.feedback import flash, show_flash
+from production_scheduler.supabase_io import fetch_all_rows
 
 st.set_page_config(page_title="Order Book Table", layout="wide")
 
@@ -70,14 +79,13 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
     ).execute()
 
 
-def load_data() -> tuple[pd.DataFrame, str | None]:
-    """Fetch all rows from Supabase."""
-    supabase = get_supabase()
-    response = supabase.table(SUPABASE_TABLE).select("*").execute()
-    rows = response.data
+def load_data() -> tuple[pd.DataFrame, str | None, str | None]:
+    """Fetch all rows from Supabase; the third value is a problem message if some couldn't be read."""
+    fetched = fetch_all_rows(get_supabase(), SUPABASE_TABLE)
+    rows = fetched.rows
 
     if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS), None
+        return pd.DataFrame(columns=REQUIRED_COLS), None, fetched.problem()
 
     df = pd.DataFrame(rows)
     last_name = df["uploaded_name"].iloc[0] if "uploaded_name" in df.columns else None
@@ -97,7 +105,7 @@ def load_data() -> tuple[pd.DataFrame, str | None]:
         df[c] = df[c].fillna("").astype(str)
 
     present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present], last_name
+    return df[present], last_name, fetched.problem()
 
 
 # ---------------- Helpers ----------------
@@ -207,9 +215,12 @@ def apply_filters(df, filters):
 # ---------------- Session Init ----------------
 if "df" not in st.session_state:
     with st.spinner("Loading saved data..."):
-        df_loaded, last_name = load_data()
+        df_loaded, last_name, load_problem = load_data()
     st.session_state.df = df_loaded
     st.session_state.last_uploaded_name = last_name
+    st.session_state.load_problem = load_problem
+if "load_problem" not in st.session_state:
+    st.session_state.load_problem = None
 if "last_uploaded_name" not in st.session_state:
     st.session_state.last_uploaded_name = None
 if "df_version" not in st.session_state:
@@ -221,6 +232,9 @@ if "has_unsaved_changes" not in st.session_state:
 # ---------------- Table Page ----------------
 st.title("🧾 Table View")
 st.caption("Edit rows here, then click **Apply Changes**. Calendar updates automatically.")
+show_flash()
+if st.session_state.load_problem:
+    st.error(st.session_state.load_problem)
 
 if st.session_state.last_uploaded_name:
     st.info(f"📂 Currently loaded: **{st.session_state.last_uploaded_name}**")
@@ -355,7 +369,7 @@ if apply:
     
     st.session_state.df_version += 1
     st.session_state.has_unsaved_changes = True
-    st.success("Changes applied. Click 'Update Changes' below to save to database.")
+    flash("Changes applied. Click 'Update Changes' below to save to database.")
     st.rerun()
 
 # ---------------- Update Changes (Password Protected) ----------------
@@ -373,12 +387,14 @@ with st.expander("Password Protected Update", expanded=st.session_state.has_unsa
     
     if update_btn:
         correct_password = st.secrets.get("UPDATE_PASSWORD", "admin123")
-        
-        if password == correct_password:
+
+        if st.session_state.load_problem:
+            st.error(f"❌ Changes not saved. {st.session_state.load_problem}")
+        elif password == correct_password:
             with st.spinner("Saving to database..."):
                 save_data(st.session_state.df, st.session_state.last_uploaded_name)
             st.session_state.has_unsaved_changes = False
-            st.success("✅ Changes saved to database successfully!")
+            flash("✅ Changes saved to database successfully!")
             st.rerun()
         else:
             st.error("❌ Incorrect password. Changes not saved.")

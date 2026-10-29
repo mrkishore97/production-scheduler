@@ -17,9 +17,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from production_scheduler.calendar_sync import apply_drag, parse_event_change
 from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
 from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
+from production_scheduler.feedback import flash, show_flash
 from production_scheduler.status import normalize_status_key, status_to_colors
+from production_scheduler.supabase_io import fetch_all_rows
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Order Book Calendar", layout="wide")
@@ -90,14 +93,17 @@ def save_data(df: pd.DataFrame, last_uploaded_name: str):
     ).execute()
 
 
-def load_data() -> tuple[pd.DataFrame, str | None]:
-    """Fetch all rows from Supabase and return as a normalized DataFrame."""
-    supabase = get_supabase()
-    response = supabase.table(SUPABASE_TABLE).select("*").execute()
-    rows = response.data
+def load_data() -> tuple[pd.DataFrame, str | None, str | None]:
+    """Fetch all rows from Supabase as a normalized DataFrame.
+
+    Returns (df, last uploaded file name, problem); problem is a message when
+    not every row could be read, in which case saving must stay off.
+    """
+    fetched = fetch_all_rows(get_supabase(), SUPABASE_TABLE)
+    rows = fetched.rows
 
     if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS), None
+        return pd.DataFrame(columns=REQUIRED_COLS), None, fetched.problem()
 
     df = pd.DataFrame(rows)
     last_name = df["uploaded_name"].iloc[0] if "uploaded_name" in df.columns else None
@@ -117,7 +123,7 @@ def load_data() -> tuple[pd.DataFrame, str | None]:
         df[c] = df[c].fillna("").astype(str)
 
     present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present], last_name
+    return df[present], last_name, fetched.problem()
 
 
 # ---------------- Helpers ----------------
@@ -537,9 +543,14 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int) -> str:
 # ---------------- Session Init ----------------
 if "df" not in st.session_state:
     with st.spinner("Loading saved data..."):
-        df_loaded, last_name = load_data()
+        df_loaded, last_name, load_problem = load_data()
     st.session_state.df = df_loaded
     st.session_state.last_uploaded_name = last_name
+    st.session_state.load_problem = load_problem
+if "load_problem" not in st.session_state:
+    st.session_state.load_problem = None
+if "calendar_view" not in st.session_state:
+    st.session_state.calendar_view = {}
 if "last_uploaded_name" not in st.session_state:
     st.session_state.last_uploaded_name = None
 if "df_version" not in st.session_state:
@@ -552,6 +563,22 @@ if "show_print_preview" not in st.session_state:
     st.session_state.show_print_preview = False
 if "last_uploaded_signature" not in st.session_state:
     st.session_state.last_uploaded_signature = None
+
+
+# ---------------- Calendar drag & drop ----------------
+# Apply a drop before anything is drawn, so this run already shows the new
+# date everywhere. (Drawing the calendar from the old data first made dropped
+# events jump back to their old day for a moment.) The key changes whenever the
+# data is changed another way, which starts the drag history afresh.
+calendar_key = f"calendar_{st.session_state.df_version}"
+drag = parse_event_change(st.session_state.get(calendar_key))
+if drag and drag.signature(calendar_key) != st.session_state.last_applied_change:
+    st.session_state.last_applied_change = drag.signature(calendar_key)
+    if apply_drag(st.session_state.df, drag):
+        st.session_state.has_unsaved_changes = True
+        st.toast(f"WO {drag.wo} moved to {drag.new_date:%a %b %d, %Y}")
+    if drag.view_date:
+        st.session_state.calendar_view = {"date": drag.view_date.isoformat(), "view": drag.view_type}
 
 
 # ---------------- Sidebar ----------------
@@ -578,8 +605,9 @@ with st.sidebar:
                 st.session_state.df_version += 1
                 st.session_state.has_unsaved_changes = False
                 st.session_state.last_uploaded_signature = None
+                st.session_state.load_problem = None
                 save_data(pd.DataFrame(columns=REQUIRED_COLS), "")
-                st.success("All data cleared.")
+                flash("All data cleared.")
                 st.rerun()
             else:
                 st.error("❌ Incorrect password. Data not cleared.")
@@ -599,6 +627,7 @@ if file is not None:
             st.session_state.last_uploaded_name = file.name
             st.session_state.last_uploaded_signature = file_signature
             st.session_state.has_unsaved_changes = True
+            st.session_state.load_problem = None  # the working data now comes from the file
             st.success(f"Loaded {len(st.session_state.df)} rows. Click 'Update Changes' below to save to database.")
     except Exception as e:
         st.exception(e)
@@ -606,32 +635,26 @@ if file is not None:
 
 # ---------------- Calendar ----------------
 st.title("📅 Production Schedule Calendar")
+show_flash()
+if st.session_state.load_problem:
+    st.error(st.session_state.load_problem)
 
 events = df_to_calendar_events(st.session_state.df)
 
-cal_state = calendar(
+# Only drops are reported back. Other calendar messages (clicks, event loads)
+# would each re-run the whole page for nothing.
+calendar(
     events=events,
-    options=build_calendar_options(editable=True, height=900),
+    options=build_calendar_options(
+        editable=True,
+        height=900,
+        initial_date=st.session_state.calendar_view.get("date"),
+        initial_view=st.session_state.calendar_view.get("view"),
+    ),
     custom_css=ADMIN_CALENDAR_CUSTOM_CSS,
+    callbacks=["eventChange"],
     key=f"calendar_{st.session_state.df_version}",
 )
-
-if cal_state and cal_state.get("callback") == "eventChange":
-    ev = (cal_state.get("eventChange") or {}).get("event") or {}
-    wo = str(ev.get("id", "")).strip()
-    new_dt = pd.to_datetime(ev.get("start"), errors="coerce")
-    if wo and not pd.isna(new_dt):
-        new_date = new_dt.date()
-        sig = f"{wo}|{new_date.isoformat()}"
-        if st.session_state.last_applied_change != sig:
-            mask = st.session_state.df["WO"].astype(str).str.strip() == wo
-            if mask.any():
-                old_val = st.session_state.df.loc[mask, "Scheduled Date"].iloc[0]
-                if pd.isna(old_val) or old_val != new_date:
-                    st.session_state.df.loc[mask, "Scheduled Date"] = new_date
-                    st.session_state.has_unsaved_changes = True
-                    # Don't increment df_version here - it causes calendar remount and snap-back
-            st.session_state.last_applied_change = sig
 
 # ---------------- Update Changes (Password Protected) ----------------
 if st.session_state.has_unsaved_changes:
@@ -648,13 +671,15 @@ with st.expander("🔐 Update Changes (Password Protected)", expanded=st.session
     
     if update_btn:
         correct_password = st.secrets.get("UPDATE_PASSWORD", "admin123")  # Default fallback
-        
-        if password == correct_password:
+
+        if st.session_state.load_problem:
+            st.error(f"❌ Changes not saved. {st.session_state.load_problem}")
+        elif password == correct_password:
             with st.spinner("Saving changes to database..."):
                 save_data(st.session_state.df, st.session_state.last_uploaded_name)
             st.session_state.has_unsaved_changes = False
-            st.session_state.df_version += 1  # Force calendar remount with saved data
-            st.success("✅ Changes saved to database successfully!")
+            st.session_state.df_version += 1  # new calendar key: starts a fresh drag history
+            flash("✅ Changes saved to database successfully!")
             st.rerun()
         else:
             st.error("❌ Incorrect password. Changes not saved.")

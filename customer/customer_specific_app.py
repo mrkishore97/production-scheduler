@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 from production_scheduler.calendar_ui import CUSTOMER_CALENDAR_CUSTOM_CSS, build_calendar_options
 from production_scheduler.customer_portal import (
+    INCOMPLETE_DATA_WARNING,
     build_excel_bytes,
     df_to_calendar_events,
     generate_monthly_print_view,
@@ -159,7 +160,9 @@ my_customers: list[str] = st.session_state.token_customers
 customer_display: str   = st.session_state.customer_display
 
 _version = get_data_version()
-df_all = load_all_data(data_version=_version)
+df_all, all_loaded = load_all_data(data_version=_version)
+if not all_loaded:
+    st.warning(INCOMPLETE_DATA_WARNING)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]
@@ -192,6 +195,7 @@ calendar(
     events=events,
     options=build_calendar_options(editable=False, height=880),
     custom_css=CUSTOMER_CALENDAR_CUSTOM_CSS,
+    callbacks=[],  # read-only: clicks must not re-run the page
     key=f"cal_{st.session_state.df_version}",
 )
 

@@ -9,6 +9,9 @@ from supabase import Client, create_client
 
 from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
 from production_scheduler.status import SOLD_COLORS, normalize_status_key, status_to_colors
+from production_scheduler.supabase_io import fetch_all_rows
+
+INCOMPLETE_DATA_WARNING = "Some orders could not be loaded. Please refresh the page; if this keeps happening, contact your administrator."
 
 
 @st.cache_resource
@@ -34,13 +37,13 @@ def get_data_version() -> str:
 
 
 @st.cache_data(ttl=300)
-def load_all_data(data_version: str = "0") -> pd.DataFrame:
-    supabase = get_supabase()
-    response = supabase.table(SUPABASE_TABLE).select("*").execute()
-    rows = response.data
+def load_all_data(data_version: str = "0") -> tuple[pd.DataFrame, bool]:
+    """All orders, plus whether every row could be read."""
+    fetched = fetch_all_rows(get_supabase(), SUPABASE_TABLE)
+    rows = fetched.rows
 
     if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS)
+        return pd.DataFrame(columns=REQUIRED_COLS), fetched.complete
 
     df = pd.DataFrame(rows)
     df = df.rename(columns={
@@ -57,7 +60,7 @@ def load_all_data(data_version: str = "0") -> pd.DataFrame:
         df[c] = df[c].fillna("").astype(str)
 
     present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present]
+    return df[present], fetched.complete
 
 
 def parse_date(x):

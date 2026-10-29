@@ -13,7 +13,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from production_scheduler.customer_portal import get_data_version, load_all_data
+from production_scheduler.customer_portal import INCOMPLETE_DATA_WARNING, get_data_version, load_all_data
 
 
 def apply_filters(df, filters):
@@ -121,7 +121,9 @@ with st.sidebar:
 
 # ---- Load & filter to this user's customers ----
 _version = get_data_version()
-df_all = load_all_data(data_version=_version)
+df_all, all_loaded = load_all_data(data_version=_version)
+if not all_loaded:
+    st.warning(INCOMPLETE_DATA_WARNING)
 my_df  = df_all[
     df_all["Customer Name"].str.strip().str.lower().isin(
         [c.strip().lower() for c in my_customers]

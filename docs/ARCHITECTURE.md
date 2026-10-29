@@ -37,6 +37,17 @@ This document explains how the apps and shared modules work together, and where 
   - Shared FullCalendar options and CSS presets
   - Main place to update visual consistency across app entrypoints
 
+- `calendar_sync.py`
+  - Reads drag-and-drop messages from the admin calendar and applies each one exactly once
+  - Runs before the calendar is drawn, so a dropped event never jumps back
+
+- `supabase_io.py`
+  - Reads whole tables page by page (Supabase caps each request at its "Max rows" setting)
+  - Reports when not every row could be read; the admin pages then refuse to save
+
+- `feedback.py`
+  - Confirmation messages that survive `st.rerun()`
+
 - `customer_portal.py`
   - Consolidated customer portal logic:
     - Supabase reads

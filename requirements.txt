@@ -1,5 +1,8 @@
-streamlit 
-pandas 
-openpyxl 
-streamlit-calendar
-supabase
+# Exact versions the test suite passed with (see README, "Running the tests").
+# Streamlit 1.66 needs Python 3.11+, so a host on Python 3.10 gets 1.65.0, also tested.
+streamlit==1.66.1; python_version >= "3.11"
+streamlit==1.65.0; python_version < "3.11"
+pandas==2.3.3
+openpyxl==3.1.5
+streamlit-calendar==1.4.0
+supabase==2.33.0
