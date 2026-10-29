@@ -11,12 +11,15 @@ from datetime import timedelta
 
 import pytest
 
+from conftest import PASSWORD
 from sample_data import bulk_orders, month_day, order, to_upload_frame
 from ui import (
     apply_table,
     calendar,
+    delete_table_row,
     drag_event,
     edit_table_date,
+    filter_customer,
     event_day,
     moves,
     next_month,
@@ -25,6 +28,7 @@ from ui import (
     open_table,
     record_moves,
     save,
+    save_on_table,
     saved_dates,
     shown_month,
     upload,
@@ -148,7 +152,6 @@ def test_save_refused_when_load_was_incomplete(page, fake_db, admin_url):
     assert page.get_by_text("not saved", exact=False).first.is_visible()
 
 
-@pytest.mark.xfail(strict=True, reason="Step 3: orders are identified by WO, so duplicates move together")
 def test_duplicate_wo_drag_moves_only_that_order(page, fake_db, admin_url):
     fake_db.reset([order("500", month_day(5)), order("500", month_day(7), customer="Beta Industries")])
     open_app(page, admin_url)
@@ -156,14 +159,97 @@ def test_duplicate_wo_drag_moves_only_that_order(page, fake_db, admin_url):
     assert working_dates(page)["500"] == sorted([iso(7), iso(20)])
 
 
-@pytest.mark.xfail(strict=True, reason="Step 4: saving deletes everything before re-inserting")
-def test_failed_save_keeps_existing_data(page, fake_db, admin_url):
+def test_failed_save_keeps_everything_and_can_be_retried(page, fake_db, admin_url):
     fake_db.reset([order("100", month_day(10)), order("101", month_day(11))])
     open_app(page, admin_url)
     drag_event(page, "100", month_day(12))
-    fake_db.configure(fail_insert_after=0)
+
+    fake_db.configure(fail_save=True)
     save(page)
-    assert len(fake_db.orders()) == 2
+    assert saved_dates(fake_db) == {"100": [iso(10)], "101": [iso(11)]}  # database untouched
+    assert page.get_by_text("Saving failed", exact=False).first.is_visible()
+    assert working_dates(page)["100"] == [iso(12)]  # the change is still pending
+
+    fake_db.configure(fail_save=False)
+    save(page)
+    assert saved_dates(fake_db) == {"100": [iso(12)], "101": [iso(11)]}
+    assert page.get_by_text("Changes saved", exact=False).first.is_visible()
+
+
+def test_save_needs_database_setup(page, fake_db, admin_url):
+    fake_db.reset([order("100", month_day(10))], has_save_function=False)
+    open_app(page, admin_url)
+    drag_event(page, "100", month_day(12))
+    save(page)
+    assert page.get_by_text("save_schedule.sql", exact=False).first.is_visible()
+    assert saved_dates(fake_db) == {"100": [iso(10)]}
+
+
+def test_two_people_cannot_overwrite_each_other(page, fake_db, admin_url, browser):
+    fake_db.reset([order("100", month_day(10)), order("101", month_day(11))])
+    other = browser.new_context(viewport={"width": 1400, "height": 1100}, accept_downloads=True).new_page()
+    open_app(page, admin_url)
+    open_app(other, admin_url)
+
+    drag_event(page, "100", month_day(12))
+    save(page)
+    drag_event(other, "101", month_day(14))
+    save(other)
+
+    assert saved_dates(fake_db) == {"100": [iso(12)], "101": [iso(11)]}
+    assert other.get_by_text("someone else saved", exact=False).first.is_visible()
+
+    other.get_by_role("button", name="Reload latest from database").click()
+    wait_for_app(other, 800)
+    assert working_dates(other) == {"100": [iso(12)], "101": [iso(11)]}
+    drag_event(other, "101", month_day(14))
+    save(other)
+    assert saved_dates(fake_db) == {"100": [iso(12)], "101": [iso(14)]}
+    other.context.close()
+
+
+def test_import_preview_then_replace(page, fake_db, admin_url, tmp_path):
+    fake_db.reset([order("100", month_day(10)), order("101", month_day(11))])
+    open_app(page, admin_url)
+
+    sheet = tmp_path / "new.xlsx"
+    to_upload_frame([order("100", month_day(15)), order("102", month_day(5)),
+                     order("103", month_day(6)), order("103", month_day(7))]).to_excel(sheet, index=False)
+    upload(page, sheet, confirm=False)
+
+    def metric(label):
+        return page.locator("[data-testid='stMetric']", has_text=label).locator("[data-testid='stMetricValue']").inner_text()
+
+    assert (metric("New WOs"), metric("Changed WOs"), metric("Removed WOs"), metric("Duplicate WOs")) == ("2", "1", "1", "1")
+    assert working_dates(page) == {"100": [iso(10)], "101": [iso(11)]}  # nothing replaced yet
+
+    page.get_by_role("button", name="Replace schedule with this file").click()
+    wait_for_app(page, 800)
+    save(page)
+    assert saved_dates(fake_db) == {"100": [iso(15)], "102": [iso(5)], "103": [iso(6), iso(7)]}
+
+
+def test_cancelled_import_changes_nothing(page, fake_db, admin_url, tmp_path):
+    fake_db.reset([order("100", month_day(10))])
+    open_app(page, admin_url)
+    sheet = tmp_path / "new.xlsx"
+    to_upload_frame([order("200", month_day(5))]).to_excel(sheet, index=False)
+    upload(page, sheet, confirm=False)
+    page.get_by_role("button", name="Cancel import").click()
+    wait_for_app(page, 800)
+    assert working_dates(page) == {"100": [iso(10)]}
+    assert page.get_by_role("button", name="Replace schedule with this file").count() == 0
+
+
+def test_clear_all_data(page, fake_db, admin_url):
+    fake_db.reset([order("100", month_day(10)), order("101", month_day(11))])
+    open_app(page, admin_url)
+    page.get_by_text("Clear All Data").click()
+    page.get_by_label("Enter password to confirm").fill(PASSWORD)
+    page.get_by_role("button", name="Delete All Data").click()
+    wait_for_app(page, 800)
+    assert fake_db.orders() == []
+    assert page.get_by_text("All data cleared").first.is_visible()
 
 
 # ---------- calendar <-> table ----------
@@ -229,3 +315,33 @@ def test_month_stays_after_visiting_table(page, fake_db, admin_url):
     open_calendar(page)
 
     assert shown_month(page) == title
+
+
+def test_filtered_table_edit_leaves_hidden_orders_alone(page, fake_db, admin_url):
+    fake_db.reset([
+        order("500", month_day(5)),
+        order("500", month_day(7), customer="Beta Industries"),
+        order("", None, customer="No WO Co"),
+        order("", month_day(9), customer="Other Co"),
+    ])
+    open_app(page, admin_url)
+    open_table(page)
+    filter_customer(page, "Acme")
+    edit_table_date(page, row=0, value=month_day(15))
+    apply_table(page)
+    save_on_table(page)
+
+    assert saved_dates(fake_db) == {"500": [iso(7), iso(15)], "": ["", iso(9)]}
+
+
+def test_deleting_every_shown_row_deletes_them(page, fake_db, admin_url):
+    fake_db.reset([order("500", month_day(5)), order("500", month_day(7), customer="Beta Industries")])
+    open_app(page, admin_url)
+    open_table(page)
+    filter_customer(page, "Acme")
+    delete_table_row(page, row=0)
+    apply_table(page)
+    save_on_table(page)
+
+    rows = fake_db.orders()
+    assert [(r["wo"], r["customer_name"]) for r in rows] == [("500", "Beta Industries")]

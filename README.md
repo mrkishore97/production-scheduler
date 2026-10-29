@@ -24,11 +24,15 @@ production_scheduler/
   config.py                      # Shared constants (columns/table name)
   status.py                      # Shared status normalization + colors
   calendar_ui.py                 # Shared calendar options + CSS presets
+  order_book.py                  # Loading, cleaning, comparing and saving orders
+  admin_session.py               # The admin pages' shared working copy (load/save/reload)
   calendar_sync.py               # Applies calendar drag-and-drop to the working data
   supabase_io.py                 # Reads whole tables page by page
   feedback.py                    # Messages that survive a page re-run
   customer_portal.py             # Shared customer portal data/event/export logic
-tests/                           # Unit and browser tests (see "Running the tests")
+db/
+  save_schedule.sql              # One-time database setup for safe saving
+tests/                           # Unit, database and browser tests (see "Running the tests")
 docs/
   ARCHITECTURE.md                # Detailed architecture and data flow
 .streamlit/
@@ -75,7 +79,18 @@ Copy the example file and fill in real values:
 cp .streamlit/secrets.example.toml .streamlit/secrets.toml
 ```
 
-### 3) Run apps
+### 3) Set up safe saving in the database (once)
+
+In Supabase, open **SQL Editor → New query**, paste the whole of
+[`db/save_schedule.sql`](db/save_schedule.sql) and click **Run**. Running it
+again later is harmless.
+
+It creates the `save_schedule` function the admin pages save through. Each save
+then writes only the orders that changed, all in one transaction, and is
+refused if someone else saved after you loaded the schedule. Until it has been
+run, the admin pages show a message instead of saving.
+
+### 4) Run apps
 
 ### Admin app
 ```bash
@@ -98,7 +113,7 @@ streamlit run customer/customer_specific_app.py
 
 Expected canonical fields used across apps:
 
-- `id` (primary key; used to read the table page by page)
+- `id` (primary key; identifies each order in the app and when saving)
 - `wo`
 - `quote`
 - `po_number`
@@ -127,6 +142,10 @@ Expected canonical fields used across apps:
 ## Operational Notes
 
 - Admin edits are saved to Supabase and reflected in customer views.
+- Saving sends only the changed orders through `save_schedule`; if another admin saved first,
+  the save is refused and nothing is written. Use **Reload latest from database** to continue.
+- Uploading a spreadsheet shows a preview (new, changed, removed and duplicate WOs) before it
+  replaces the working schedule; nothing is saved until **Update Changes**.
 - Customer portals are intentionally read-only.
 - Status color rendering is normalized through `production_scheduler/status.py`.
 - Customer apps cache Supabase reads (`@st.cache_data(ttl=300)`) to reduce load.
@@ -151,13 +170,19 @@ playwright install chromium
 pytest
 ```
 
+The database tests in `tests/test_save_schedule_sql.py` check `db/save_schedule.sql`
+against a real Postgres. They are skipped unless `TEST_DATABASE_URL` points at a
+throwaway database (each test drops and recreates the tables):
+
+```bash
+TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres pytest tests/test_save_schedule_sql.py
+```
+
 To run only the fast tests that don't need a browser:
 
 ```bash
 pytest -m "not e2e"
 ```
-
-Tests marked `xfail` describe known defects that later repair steps fix.
 
 To make a test spreadsheet for manual testing (duplicate WOs, blank WOs and
 more than 1,000 rows included):

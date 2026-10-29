@@ -6,7 +6,9 @@ It mimics the behaviour that matters for these tests:
 - a per-request row cap (Supabase's "Max rows" setting, 1000 by default)
 - ``offset``/``limit`` paging, ``order=``, ``Prefer: count=exact``
 - ``eq`` / ``neq`` filters, insert, upsert, update and delete
-- failure injection, so a save can be made to fail part-way through
+- the ``save_schedule`` function from db/save_schedule.sql: version check,
+  all-or-nothing writes, version bump
+- failure injection: a save can be made to fail, or the function to be missing
 
 Test-only control endpoints live under ``/__test__/``.
 """
@@ -34,11 +36,12 @@ class FakeDatabase:
             self.config = {
                 "max_rows": 1000,
                 "has_id": True,
-                "fail_insert_after": None,  # number of successful inserts before failing
+                "has_save_function": True,  # False: as if db/save_schedule.sql was never run
+                "fail_save": False,  # True: save_schedule fails without writing anything
                 "latency": 0.0,
             }
             self.config.update(config)
-            self.insert_calls = 0
+            self.saves = 0
             self.reads: dict[str, int] = {}
             for name, rows in (tables or {}).items():
                 self.tables[name] = []
@@ -148,7 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, DB.config)
         if action == "dump":
             with DB.lock:
-                return self._send(200, {"tables": DB.tables, "insert_calls": DB.insert_calls, "reads": DB.reads})
+                return self._send(200, {"tables": DB.tables, "saves": DB.saves, "reads": DB.reads})
         return self._error(404, "unknown control action")
 
     # ---------- REST ----------
@@ -198,6 +201,8 @@ class Handler(BaseHTTPRequestHandler):
         parts, params = self._parse()
         if parts and parts[0] == "__test__":
             return self._control(parts[1] if len(parts) > 1 else "")
+        if parts[:3] == ["rest", "v1", "rpc"] and len(parts) == 4:
+            return self._rpc(parts[3], self._body() or {})
         table = self._table(parts)
         if table is None:
             return self._error(404, "not found")
@@ -206,11 +211,6 @@ class Handler(BaseHTTPRequestHandler):
         rows = body if isinstance(body, list) else [body]
         upsert = "resolution=merge-duplicates" in self._prefer()
         with DB.lock:
-            if table == "order_book" and not upsert:
-                limit = DB.config["fail_insert_after"]
-                if limit is not None and DB.insert_calls >= limit:
-                    return self._error(503, "simulated failure: insert rejected")
-                DB.insert_calls += 1
             out = []
             pk = PRIMARY_KEYS.get(table)
             for row in rows:
@@ -224,6 +224,37 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     out.append(dict(DB._add(table, row)))
         self._send(201, out if "return=representation" in self._prefer() else None)
+
+    def _rpc(self, name: str, args: dict) -> None:
+        """Same rules as db/save_schedule.sql (tested against Postgres in test_save_schedule_sql.py)."""
+        if name != "save_schedule" or not DB.config["has_save_function"]:
+            return self._error(404, f"Could not find the function public.{name}", "PGRST202")
+        self._latency()
+        with DB.lock:
+            meta = next((r for r in DB.tables["app_meta"] if r.get("key") == "data_version"), None)
+            current = str(meta["value"]) if meta else "0"
+            if current != str(args.get("expected_version") or "0"):
+                return self._error(409, "schedule_conflict", "PT409")
+            if DB.config["fail_save"]:
+                return self._error(500, "simulated failure: save rejected")
+            deletes = {str(i) for i in args.get("deletes") or []}
+            rows = [r for r in DB.tables["order_book"] if str(r.get("id")) not in deletes]
+            DB.tables["order_book"] = rows
+            for change in args.get("upserts") or []:
+                values = {k: v for k, v in change.items() if k != "id"}
+                if change.get("id") is None:
+                    DB._add("order_book", values)
+                else:
+                    target = next((r for r in rows if str(r.get("id")) == str(change["id"])), None)
+                    if target is not None:
+                        target.update(values)
+            version = str((int(current) if current.isdigit() else 0) + 1)
+            if meta is None:
+                DB.tables["app_meta"].append({"key": "data_version", "value": version})
+            else:
+                meta["value"] = version
+            DB.saves += 1
+        self._send(200, version)
 
     def do_PATCH(self) -> None:
         parts, params = self._parse()

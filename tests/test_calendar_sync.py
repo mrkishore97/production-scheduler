@@ -5,12 +5,12 @@ import pandas as pd
 from production_scheduler.calendar_sync import apply_drag, parse_event_change
 
 
-def message(wo="100", old="2026-10-10", new="2026-10-12", view=None):
+def message(event_id="7", old="2026-10-10", new="2026-10-12", view=None, wo="100"):
     return {
         "callback": "eventChange",
         "eventChange": {
-            "oldEvent": {"id": wo, "start": old, "allDay": True},
-            "event": {"id": wo, "start": new, "allDay": True},
+            "oldEvent": {"id": event_id, "start": old, "allDay": True, "extendedProps": {"wo": wo}},
+            "event": {"id": event_id, "start": new, "allDay": True, "extendedProps": {"wo": wo}},
             "relatedEvents": [],
             "view": view
             or {
@@ -23,7 +23,7 @@ def message(wo="100", old="2026-10-10", new="2026-10-12", view=None):
 
 
 def frame(*rows):
-    return pd.DataFrame(rows, columns=["WO", "Scheduled Date"])
+    return pd.DataFrame(rows, columns=["id", "WO", "Scheduled Date"])
 
 
 def test_ignores_other_messages():
@@ -34,6 +34,7 @@ def test_ignores_other_messages():
 
 def test_reads_drop():
     drag = parse_event_change(message())
+    assert drag.event_id == "7"
     assert drag.wo == "100"
     assert drag.new_date == date(2026, 10, 12)
     assert drag.view_type == "dayGridMonth"
@@ -58,7 +59,7 @@ def test_same_message_has_same_signature_but_new_drag_back_does_not():
 
 
 def test_apply_drag_sets_date_once():
-    df = frame(("100", date(2026, 10, 10)), ("200", date(2026, 10, 3)))
+    df = frame(("7", "100", date(2026, 10, 10)), ("8", "200", date(2026, 10, 3)))
     drag = parse_event_change(message())
     assert apply_drag(df, drag) is True
     assert df.loc[0, "Scheduled Date"] == date(2026, 10, 12)
@@ -66,7 +67,13 @@ def test_apply_drag_sets_date_once():
     assert apply_drag(df, drag) is False  # already there
 
 
-def test_apply_drag_fills_missing_date_and_ignores_unknown_wo():
-    df = frame(("100", pd.NaT))
+def test_apply_drag_fills_missing_date_and_ignores_unknown_order():
+    df = frame(("7", "100", pd.NaT))
     assert apply_drag(df, parse_event_change(message())) is True
-    assert apply_drag(df, parse_event_change(message(wo="999"))) is False
+    assert apply_drag(df, parse_event_change(message(event_id="999"))) is False
+
+
+def test_duplicate_wo_moves_only_the_dragged_order():
+    df = frame(("7", "500", date(2026, 10, 5)), ("8", "500", date(2026, 10, 7)))
+    assert apply_drag(df, parse_event_change(message(event_id="7", wo="500", new="2026-10-20"))) is True
+    assert list(df["Scheduled Date"]) == [date(2026, 10, 20), date(2026, 10, 7)]

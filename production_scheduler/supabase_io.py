@@ -27,6 +27,12 @@ class Fetched(NamedTuple):
         )
 
 
+def read_version(client: Client) -> str:
+    """The schedule's saved version (app_meta "data_version"); "0" if there is none yet."""
+    resp = client.table("app_meta").select("value").eq("key", "data_version").execute()
+    return str(resp.data[0]["value"]) if resp.data else "0"
+
+
 def fetch_all_rows(client: Client, table: str, page_size: int = PAGE_SIZE) -> Fetched:
     """Read every row of ``table``.
 

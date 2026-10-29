@@ -15,6 +15,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class DragChange:
+    event_id: str  # the order's row id
     wo: str
     old_start: str
     new_start: str
@@ -23,7 +24,7 @@ class DragChange:
     view_date: date | None = None  # a day inside the period the calendar was showing
 
     def signature(self, calendar_key: str) -> tuple:
-        return (calendar_key, self.wo, self.old_start, self.new_start)
+        return (calendar_key, self.event_id, self.old_start, self.new_start)
 
 
 def parse_event_change(state) -> DragChange | None:
@@ -33,13 +34,14 @@ def parse_event_change(state) -> DragChange | None:
     payload = state.get("eventChange") or {}
     new = payload.get("event") or {}
     old = payload.get("oldEvent") or {}
-    wo = str(new.get("id", "")).strip()
+    event_id = str(new.get("id", "")).strip()
     new_dt = pd.to_datetime(new.get("start"), errors="coerce")
-    if not wo or pd.isna(new_dt):
+    if not event_id or pd.isna(new_dt):
         return None
     view = payload.get("view") or {}
     return DragChange(
-        wo=wo,
+        event_id=event_id,
+        wo=str((new.get("extendedProps") or {}).get("wo", "")),
         old_start=str(old.get("start", "")),
         new_start=str(new.get("start")),
         new_date=new_dt.date(),
@@ -50,7 +52,7 @@ def parse_event_change(state) -> DragChange | None:
 
 def apply_drag(df: pd.DataFrame, change: DragChange) -> bool:
     """Set the dragged order's Scheduled Date in place; return True if it changed."""
-    mask = df["WO"].astype(str).str.strip() == change.wo
+    mask = df["id"].astype(str) == change.event_id
     if not mask.any():
         return False
     if df["Scheduled Date"].dtype != object:

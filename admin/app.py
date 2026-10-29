@@ -2,7 +2,6 @@
 
 import hashlib
 import io
-import re
 import sys
 from datetime import datetime, date
 from calendar import monthrange
@@ -11,223 +10,41 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from streamlit_calendar import calendar
-from supabase import Client, create_client
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from production_scheduler import admin_session, order_book
 from production_scheduler.calendar_sync import apply_drag, parse_event_change
 from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
-from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
-from production_scheduler.feedback import flash, show_flash
+from production_scheduler.feedback import flash
 from production_scheduler.status import normalize_status_key, status_to_colors
-from production_scheduler.supabase_io import fetch_all_rows
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="Order Book Calendar", layout="wide")
 
-COLUMN_ALIASES = {
-    "wo": "WO", "work order": "WO", "workorder": "WO",
-    "quote": "Quote", "quotation": "Quote",
-    "po number": "PO Number", "po #": "PO Number", "po#": "PO Number",
-    "ponumber": "PO Number", "purchase order": "PO Number",
-    "status": "Status",
-    "customer": "Customer Name", "customer name": "Customer Name",
-    "client": "Customer Name", "client name": "Customer Name",
-    "model description": "Model Description", "description": "Model Description",
-    "model": "Model Description",
-    "scheduled date": "Scheduled Date", "schedule date": "Scheduled Date",
-    "scheduled": "Scheduled Date", "ship date": "Scheduled Date",
-    "delivery date": "Scheduled Date", "date": "Scheduled Date",
-    "completion date": "Completion Date", "completed date": "Completion Date",
-    "price": "Price", "amount": "Price", "value": "Price",
-}
-
-# ---------------- Supabase ----------------
-
-@st.cache_resource
-def get_supabase() -> Client:
-    """Cached Supabase client — created once per app lifetime."""
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-
-
-def save_data(df: pd.DataFrame, last_uploaded_name: str):
-    """Replace all rows in Supabase with the current DataFrame (delete-all + insert)."""
-    import time
-
-    supabase = get_supabase()
-    # Delete everything. We use neq on a column that always has a value.
-    supabase.table(SUPABASE_TABLE).delete().neq("wo", "___never___").execute()
-
-    if df.empty:
-        supabase.table("app_meta").upsert(
-            {"key": "data_version", "value": str(int(time.time()))}
-        ).execute()
-        return
-
-    rows = []
-    for _, r in df.iterrows():
-        d = r.get("Scheduled Date", pd.NaT)
-        cd = r.get("Completion Date", pd.NaT)
-        price = r.get("Price", None)
-        rows.append({
-            "wo":                str(r.get("WO", "")).strip(),
-            "quote":             str(r.get("Quote", "")),
-            "po_number":         str(r.get("PO Number", "")),
-            "status":            str(r.get("Status", "")),
-            "customer_name":     str(r.get("Customer Name", "")),
-            "model_description": str(r.get("Model Description", "")),
-            "scheduled_date":    d.isoformat() if not pd.isna(d) else None,
-            "completion_date":   cd.isoformat() if not pd.isna(cd) else None,
-            "price":             float(price) if price is not None and not pd.isna(price) else None,
-            "uploaded_name":     last_uploaded_name or "",
-        })
-
-    # Insert in batches of 500 to stay within Supabase request limits
-    for i in range(0, len(rows), 500):
-        supabase.table(SUPABASE_TABLE).insert(rows[i : i + 500]).execute()
-
-    supabase.table("app_meta").upsert(
-        {"key": "data_version", "value": str(int(time.time()))}
-    ).execute()
-
-
-def load_data() -> tuple[pd.DataFrame, str | None, str | None]:
-    """Fetch all rows from Supabase as a normalized DataFrame.
-
-    Returns (df, last uploaded file name, problem); problem is a message when
-    not every row could be read, in which case saving must stay off.
-    """
-    fetched = fetch_all_rows(get_supabase(), SUPABASE_TABLE)
-    rows = fetched.rows
-
-    if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS), None, fetched.problem()
-
-    df = pd.DataFrame(rows)
-    last_name = df["uploaded_name"].iloc[0] if "uploaded_name" in df.columns else None
-
-    df = df.rename(columns={
-        "wo": "WO", "quote": "Quote", "po_number": "PO Number",
-        "status": "Status", "customer_name": "Customer Name",
-        "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "completion_date": "Completion Date", "price": "Price",
-    })
-    df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
-
-    df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date_to_date)
-    df["Completion Date"] = df["Completion Date"].apply(parse_date_to_date)
-    df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
-    for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
-        df[c] = df[c].fillna("").astype(str)
-
-    present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present], last_name, fetched.problem()
-
 
 # ---------------- Helpers ----------------
-
-def clean_header(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s).strip()).lower()
-
-
-def parse_date_to_date(x):
-    if x is None or str(x).strip() in ("", "None", "NaT"):
-        return pd.NaT
-    try:
-        if pd.isna(x):
-            return pd.NaT
-    except Exception:
-        pass
-    dt = pd.to_datetime(x, errors="coerce")
-    return pd.NaT if pd.isna(dt) else dt.date()
-
-
-def parse_price_to_float(x):
-    if x is None or str(x).strip() == "":
-        return pd.NA
-    try:
-        if pd.isna(x):
-            return pd.NA
-    except Exception:
-        pass
-    s = re.sub(r"[^0-9.\-]", "", str(x).replace("$", "").replace(",", ""))
-    try:
-        return float(s)
-    except Exception:
-        return pd.NA
-
-
-def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df = df.rename(columns={c: COLUMN_ALIASES.get(clean_header(c), str(c).strip()) for c in df.columns})
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
-
-
-def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    df = standardize_columns(df)
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing:
-        st.error("Your file is missing required columns.")
-        st.write("**Missing:**", missing)
-        st.write("**Found columns:**", list(df.columns))
-        raise KeyError(f"Missing columns: {missing}")
-
-    ordered = REQUIRED_COLS + [c for c in df.columns if c not in REQUIRED_COLS]
-    df = df[ordered].copy()
-
-    # Remove spreadsheet footer/blank rows before type coercion.
-    df = df.dropna(how="all", subset=REQUIRED_COLS)
-
-    text_cols = ["WO", "Quote", "PO Number", "Status", "Customer Name", "Model Description"]
-    for c in text_cols:
-        df[c] = df[c].where(df[c].notna(), "").astype(str).str.strip()
-        df[c] = df[c].replace({"nan": "", "NaN": "", "None": "", "<NA>": ""})
-
-    df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date_to_date)
-    df["Completion Date"] = df["Completion Date"].apply(parse_date_to_date)
-    df["Price"] = df["Price"].apply(parse_price_to_float)
-
-    # Drop Excel summary rows (e.g., WO count + total price footer).
-    summary_like = (
-        df["WO"].str.fullmatch(r"\d+")
-        & df["Quote"].eq("")
-        & df["PO Number"].eq("")
-        & df["Status"].eq("")
-        & df["Customer Name"].eq("")
-        & df["Model Description"].eq("")
-        & df["Scheduled Date"].isna()
-        & df["Completion Date"].isna()
-        & df["Price"].notna()
-    )
-    df = df[~summary_like]
-
-    # Remove trailing empty-looking rows that became blanks after cleanup.
-    blank_text = df[["WO", "Quote", "PO Number", "Status", "Customer Name", "Model Description"]].eq("").all(axis=1)
-    df = df[~(blank_text & df["Scheduled Date"].isna() & df["Completion Date"].isna() & df["Price"].isna())]
-
-    return df
-
 
 def df_to_calendar_events(df: pd.DataFrame):
     events = []
     for _, r in df.iterrows():
         wo = str(r.get("WO", "")).strip()
         d = r.get("Scheduled Date", pd.NaT)
-        if not wo or pd.isna(d):
+        if pd.isna(d):
             continue
         cust  = str(r.get("Customer Name", "")).strip()
         model = str(r.get("Model Description", "")).strip()
         status = str(r.get("Status", "")).strip()
 
-        title = " | ".join([p for p in [wo, cust] if p])
+        title = " | ".join([p for p in [wo or "No WO", cust] if p])
         if model:
             title += f" — {model}"
 
         events.append({
-            "id": wo, "title": title,
+            # The row id, not the WO: WOs can repeat or be blank.
+            "id": str(r[order_book.ID]), "title": title,
             "start": d.isoformat(), "allDay": True,
             **status_to_colors(status),
             "extendedProps": {"wo": wo, "customer_name": cust,
@@ -243,7 +60,7 @@ def uploaded_file_signature(file) -> str:
 
 
 def build_excel_bytes(df: pd.DataFrame) -> bytes:
-    export_df = df.copy()
+    export_df = df.drop(columns=[order_book.ID], errors="ignore")
     export_df["Scheduled Date"] = pd.to_datetime(export_df["Scheduled Date"], errors="coerce")
     export_df["Completion Date"] = pd.to_datetime(export_df["Completion Date"], errors="coerce")
     buf = io.BytesIO()
@@ -541,28 +358,9 @@ def generate_monthly_print_view(df: pd.DataFrame, month: int, year: int) -> str:
 
 
 # ---------------- Session Init ----------------
-if "df" not in st.session_state:
-    with st.spinner("Loading saved data..."):
-        df_loaded, last_name, load_problem = load_data()
-    st.session_state.df = df_loaded
-    st.session_state.last_uploaded_name = last_name
-    st.session_state.load_problem = load_problem
-if "load_problem" not in st.session_state:
-    st.session_state.load_problem = None
-if "calendar_view" not in st.session_state:
-    st.session_state.calendar_view = {}
-if "last_uploaded_name" not in st.session_state:
-    st.session_state.last_uploaded_name = None
-if "df_version" not in st.session_state:
-    st.session_state.df_version = 0
-if "last_applied_change" not in st.session_state:
-    st.session_state.last_applied_change = None
-if "has_unsaved_changes" not in st.session_state:
-    st.session_state.has_unsaved_changes = False
+admin_session.init()
 if "show_print_preview" not in st.session_state:
     st.session_state.show_print_preview = False
-if "last_uploaded_signature" not in st.session_state:
-    st.session_state.last_uploaded_signature = None
 
 
 # ---------------- Calendar drag & drop ----------------
@@ -576,7 +374,7 @@ if drag and drag.signature(calendar_key) != st.session_state.last_applied_change
     st.session_state.last_applied_change = drag.signature(calendar_key)
     if apply_drag(st.session_state.df, drag):
         st.session_state.has_unsaved_changes = True
-        st.toast(f"WO {drag.wo} moved to {drag.new_date:%a %b %d, %Y}")
+        st.toast(f"WO {drag.wo or '(none)'} moved to {drag.new_date:%a %b %d, %Y}")
     if drag.view_date:
         st.session_state.calendar_view = {"date": drag.view_date.isoformat(), "view": drag.view_type}
 
@@ -600,44 +398,80 @@ with st.sidebar:
         if st.button("Delete All Data", type="secondary"):
             correct_password = st.secrets.get("UPDATE_PASSWORD", "admin123")
             if clear_password == correct_password:
-                st.session_state.df = pd.DataFrame(columns=REQUIRED_COLS)
-                st.session_state.last_uploaded_name = None
-                st.session_state.df_version += 1
-                st.session_state.has_unsaved_changes = False
+                before = st.session_state.df
+                st.session_state.df = order_book.empty_frame()
                 st.session_state.last_uploaded_signature = None
-                st.session_state.load_problem = None
-                save_data(pd.DataFrame(columns=REQUIRED_COLS), "")
-                flash("All data cleared.")
-                st.rerun()
+                if not admin_session.save(done_message="All data cleared."):
+                    st.session_state.df = before
+                    st.error(st.session_state.save_error)
             else:
                 st.error("❌ Incorrect password. Data not cleared.")
 
     st.caption("Use Streamlit's left sidebar page selector to open **Table View**.")
 
 
+# An upload is only a proposal until it is confirmed in the import preview below.
 if file is not None:
     try:
         file_signature = uploaded_file_signature(file)
-        if file_signature != st.session_state.last_uploaded_signature:
-            file_bytes = file.getvalue()
-            buffer = io.BytesIO(file_bytes)
+        pending = st.session_state.pending_import or {}
+        if file_signature not in (st.session_state.last_uploaded_signature, pending.get("signature")):
+            buffer = io.BytesIO(file.getvalue())
             df_raw = pd.read_csv(buffer) if file.name.lower().endswith(".csv") else pd.read_excel(buffer)
-            st.session_state.df = normalize_df(df_raw)
-            st.session_state.df_version += 1
-            st.session_state.last_uploaded_name = file.name
-            st.session_state.last_uploaded_signature = file_signature
-            st.session_state.has_unsaved_changes = True
-            st.session_state.load_problem = None  # the working data now comes from the file
-            st.success(f"Loaded {len(st.session_state.df)} rows. Click 'Update Changes' below to save to database.")
+            incoming = order_book.normalize_upload(df_raw)
+            st.session_state.pending_import = {
+                "signature": file_signature,
+                "name": file.name,
+                "df": incoming,
+                "preview": order_book.import_preview(st.session_state.df, incoming),
+            }
+    except order_book.MissingColumnsError as e:
+        st.error("Your file is missing required columns.")
+        st.write("**Missing:**", e.missing)
+        st.write("**Found columns:**", e.found)
     except Exception as e:
         st.exception(e)
 
 
 # ---------------- Calendar ----------------
 st.title("📅 Production Schedule Calendar")
-show_flash()
-if st.session_state.load_problem:
-    st.error(st.session_state.load_problem)
+admin_session.show_status()
+
+pending = st.session_state.pending_import
+if pending:
+    preview = pending["preview"]
+    with st.container(border=True):
+        st.subheader(f"📥 Import {pending['name']}?")
+        st.write(
+            f"The file has **{preview.rows}** orders. Importing **replaces the whole working schedule** "
+            "with the file. Nothing is saved to the database until you click **Update Changes**."
+        )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("New WOs", len(preview.new))
+        m2.metric("Changed WOs", len(preview.changed))
+        m3.metric("Removed WOs", len(preview.missing), help="In the current schedule but not in the file")
+        m4.metric("Duplicate WOs in file", len(preview.duplicates))
+        if preview.blank_wo:
+            st.warning(f"{preview.blank_wo} row(s) in the file have no WO number.")
+        with st.expander("Show WO numbers"):
+            for label, wos in [("New", preview.new), ("Changed", preview.changed),
+                               ("Removed", preview.missing), ("Duplicated", preview.duplicates)]:
+                if wos:
+                    st.write(f"**{label}:** " + ", ".join(wos))
+        c1, c2 = st.columns(2)
+        if c1.button("Replace schedule with this file", type="primary"):
+            st.session_state.df = pending["df"]
+            st.session_state.last_uploaded_name = pending["name"]
+            st.session_state.last_uploaded_signature = pending["signature"]
+            st.session_state.pending_import = None
+            st.session_state.df_version += 1
+            st.session_state.has_unsaved_changes = True
+            flash(f"Loaded {len(pending['df'])} rows. Click 'Update Changes' below to save to database.")
+            st.rerun()
+        if c2.button("Cancel import"):
+            st.session_state.last_uploaded_signature = pending["signature"]
+            st.session_state.pending_import = None
+            st.rerun()
 
 events = df_to_calendar_events(st.session_state.df)
 
@@ -660,7 +494,10 @@ calendar(
 if st.session_state.has_unsaved_changes:
     st.warning("⚠️ You have unsaved changes. Click 'Update Changes' below to save to database.")
 
-with st.expander("🔐 Update Changes (Password Protected)", expanded=st.session_state.has_unsaved_changes):
+with st.expander(
+    "🔐 Update Changes (Password Protected)",
+    expanded=st.session_state.has_unsaved_changes or bool(st.session_state.save_error),
+):
     st.write("Enter the password to save your changes to the Supabase database.")
     
     col_a, col_b = st.columns([2, 1])
@@ -672,17 +509,15 @@ with st.expander("🔐 Update Changes (Password Protected)", expanded=st.session
     if update_btn:
         correct_password = st.secrets.get("UPDATE_PASSWORD", "admin123")  # Default fallback
 
-        if st.session_state.load_problem:
-            st.error(f"❌ Changes not saved. {st.session_state.load_problem}")
-        elif password == correct_password:
+        if password == correct_password:
             with st.spinner("Saving changes to database..."):
-                save_data(st.session_state.df, st.session_state.last_uploaded_name)
-            st.session_state.has_unsaved_changes = False
-            st.session_state.df_version += 1  # new calendar key: starts a fresh drag history
-            flash("✅ Changes saved to database successfully!")
-            st.rerun()
+                saved = admin_session.save()
+            if not saved:
+                st.error(st.session_state.save_error)
         else:
             st.error("❌ Incorrect password. Changes not saved.")
+
+    admin_session.reload_button(key="reload_calendar")
 
 st.divider()
 

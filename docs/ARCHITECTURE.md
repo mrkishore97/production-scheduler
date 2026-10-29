@@ -37,6 +37,15 @@ This document explains how the apps and shared modules work together, and where 
   - Shared FullCalendar options and CSS presets
   - Main place to update visual consistency across app entrypoints
 
+- `order_book.py`
+  - The admin data rules: loading, cleaning uploads and table edits, comparing and saving
+  - Every order keeps its database `id`; orders added in the app get a temporary `new-N` id until saved
+  - Saving sends only the differences through the `save_schedule` database function
+
+- `admin_session.py`
+  - The admin pages' shared working copy in `st.session_state` (`df`, `saved_df`, `data_version`)
+  - Load, save (with conflict/failure messages that stay on screen) and reload
+
 - `calendar_sync.py`
   - Reads drag-and-drop messages from the admin calendar and applies each one exactly once
   - Runs before the calendar is drawn, so a dropped event never jumps back
@@ -62,11 +71,14 @@ This document explains how the apps and shared modules work together, and where 
 
 ### Admin write path
 
-1. Admin uploads CSV/XLSX in `admin/app.py`
-2. Data is normalized into canonical schema
-3. Admin edits via drag-drop calendar and/or table editor
-4. Data written back to Supabase (`order_book`)
-5. Customer views read updated data on next load/cache refresh
+1. The admin pages load every order (with its `id`) and the schedule's `data_version`
+2. Uploads are shown as a preview first; confirming replaces the working copy
+3. Drags and table edits change the working copy, matched by `id`
+4. **Update Changes** compares the working copy with what was loaded and calls
+   `save_schedule(expected_version, upserts, deletes)` (see `db/save_schedule.sql`).
+   In one transaction it checks the version, writes the changes and bumps the version;
+   if the version moved on (someone else saved), nothing is written
+5. After a save the admin reloads; customer views pick up the new `data_version` on their next run
 
 ### Customer read path
 

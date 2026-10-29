@@ -97,9 +97,13 @@ def moves(page, wo: str) -> list[str]:
     return [d for w, d in _calendar_frame(page).evaluate("window.__moves") if w == wo]
 
 
-def upload(page, path) -> None:
+def upload(page, path, confirm: bool = True) -> None:
+    """Upload a spreadsheet; with ``confirm``, accept the import preview."""
     page.locator("[data-testid='stSidebar'] input[type='file']").set_input_files(str(path))
     wait_for_app(page, settle_ms=1000)
+    if confirm:
+        page.get_by_role("button", name="Replace schedule with this file").click()
+        wait_for_app(page, settle_ms=800)
 
 
 def save(page, password: str = PASSWORD) -> None:
@@ -177,3 +181,30 @@ def apply_table(page) -> None:
 def event_day(page, wo: str) -> str:
     """The day an event is currently drawn on, as shown on screen."""
     return event(page, wo).first.evaluate("e => e.closest('td[data-date]').getAttribute('data-date')")
+
+
+def filter_customer(page, text: str) -> None:
+    page.get_by_text("Filter Options").click()
+    field = page.get_by_label("Customer", exact=True)
+    field.fill(text)
+    field.press("Enter")
+    wait_for_app(page, 800)
+
+
+def delete_table_row(page, row: int) -> None:
+    """Select a table row by its left-hand marker and delete it."""
+    grid = page.locator("[data-testid='stDataFrame']").first
+    grid.scroll_into_view_if_needed()
+    box = grid.bounding_box()
+    page.mouse.click(box["x"] + 18, box["y"] + 35 + 17 + 35 * row)
+    page.keyboard.press("Delete")
+    page.wait_for_timeout(300)
+
+
+def save_on_table(page, password: str = PASSWORD) -> None:
+    field = page.get_by_label("Password", exact=True)
+    if not field.is_visible():
+        page.get_by_text("Password Protected Update").click()
+    field.fill(password)
+    page.get_by_role("button", name="Update Changes").click()
+    wait_for_app(page, settle_ms=800)

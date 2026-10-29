@@ -7,9 +7,10 @@ import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 
-from production_scheduler.config import REQUIRED_COLS, SUPABASE_TABLE
+from production_scheduler.config import SUPABASE_TABLE
+from production_scheduler.order_book import ID, frame_from_rows
 from production_scheduler.status import SOLD_COLORS, normalize_status_key, status_to_colors
-from production_scheduler.supabase_io import fetch_all_rows
+from production_scheduler.supabase_io import fetch_all_rows, read_version
 
 INCOMPLETE_DATA_WARNING = "Some orders could not be loaded. Please refresh the page; if this keeps happening, contact your administrator."
 
@@ -21,58 +22,18 @@ def get_supabase() -> Client:
 
 def get_data_version() -> str:
     """Cheap single-row fetch — never cached, runs on every page load."""
-    supabase = get_supabase()
     try:
-        resp = (
-            supabase.table("app_meta")
-            .select("value")
-            .eq("key", "data_version")
-            .execute()
-        )
-        if resp.data:
-            return resp.data[0]["value"]
+        return read_version(get_supabase())
     except Exception:
-        pass
-    return "0"
+        return "0"
 
 
 @st.cache_data(ttl=300)
 def load_all_data(data_version: str = "0") -> tuple[pd.DataFrame, bool]:
     """All orders, plus whether every row could be read."""
     fetched = fetch_all_rows(get_supabase(), SUPABASE_TABLE)
-    rows = fetched.rows
-
-    if not rows:
-        return pd.DataFrame(columns=REQUIRED_COLS), fetched.complete
-
-    df = pd.DataFrame(rows)
-    df = df.rename(columns={
-        "wo": "WO", "quote": "Quote", "po_number": "PO Number",
-        "status": "Status", "customer_name": "Customer Name",
-        "model_description": "Model Description",
-        "scheduled_date": "Scheduled Date", "completion_date": "Completion Date", "price": "Price",
-    })
-    df = df.drop(columns=[c for c in ["uploaded_name", "id"] if c in df.columns], errors="ignore")
-    df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date)
-    df["Completion Date"] = df["Completion Date"].apply(parse_date)
-    df["Price"] = df["Price"].apply(lambda x: float(x) if x is not None else pd.NA)
-    for c in ["Quote", "PO Number", "Status", "Customer Name", "Model Description"]:
-        df[c] = df[c].fillna("").astype(str)
-
-    present = [c for c in REQUIRED_COLS if c in df.columns]
-    return df[present], fetched.complete
-
-
-def parse_date(x):
-    if x is None or str(x).strip() in ("", "None", "NaT"):
-        return pd.NaT
-    try:
-        if pd.isna(x):
-            return pd.NaT
-    except Exception:
-        pass
-    dt = pd.to_datetime(x, errors="coerce")
-    return pd.NaT if pd.isna(dt) else dt.date()
+    df, _ = frame_from_rows(fetched.rows)
+    return df.drop(columns=[ID]), fetched.complete
 
 
 def is_mine(cust_col_value: str, my_customers: list[str]) -> bool:
