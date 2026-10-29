@@ -1,0 +1,4 @@
+# Test tools. Install with: pip install -r requirements-dev.txt && playwright install chromium
+-r requirements.txt
+pytest==9.2.0
+playwright==1.63.0
