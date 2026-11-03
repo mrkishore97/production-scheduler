@@ -7,7 +7,7 @@ It mimics the behaviour that matters for these tests:
 - ``offset``/``limit`` paging, ``order=``, ``Prefer: count=exact``
 - ``eq`` / ``neq`` filters, insert, upsert, update and delete
 - the ``save_schedule`` function from db/save_schedule.sql: version check,
-  all-or-nothing writes, version bump
+  all-or-nothing writes, version bump, no repeated WO numbers
 - failure injection: a save can be made to fail, or the function to be missing
 
 Test-only control endpoints live under ``/__test__/``.
@@ -39,6 +39,7 @@ class FakeDatabase:
                 "has_id": True,
                 "has_save_function": True,  # False: as if db/save_schedule.sql was never run
                 "fail_save": False,  # True: save_schedule fails without writing anything
+                "wo_unique": True,  # the database's no-repeated-WO rule (db/save_schedule.sql)
                 "latency": 0.0,
             }
             self.config.update(config)
@@ -108,8 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _error(self, status: int, message: str, code: str = "PGRST000") -> None:
-        self._send(status, {"code": code, "message": message, "details": None, "hint": None})
+    def _error(self, status: int, message: str, code: str = "PGRST000", details: str | None = None) -> None:
+        self._send(status, {"code": code, "message": message, "details": details, "hint": None})
 
     def _body(self):
         return json.loads(self._raw) if self._raw else None
@@ -239,17 +240,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(409, "schedule_conflict", "PT409")
             if DB.config["fail_save"]:
                 return self._error(500, "simulated failure: save rejected")
+            # Work on copies, so a refused save leaves everything as it was.
             deletes = {str(i) for i in args.get("deletes") or []}
-            rows = [r for r in DB.tables["order_book"] if str(r.get("id")) not in deletes]
-            DB.tables["order_book"] = rows
+            rows = [dict(r) for r in DB.tables["order_book"] if str(r.get("id")) not in deletes]
+            next_id = DB.next_id
             for change in args.get("upserts") or []:
                 values = {k: v for k, v in change.items() if k != "id"}
                 if change.get("id") is None:
-                    DB._add("order_book", values)
+                    rows.append({**values, "id": next_id} if DB.config["has_id"] else values)
+                    next_id += 1
                 else:
                     target = next((r for r in rows if str(r.get("id")) == str(change["id"])), None)
                     if target is not None:
                         target.update(values)
+            if DB.config["wo_unique"]:
+                keys = [str(r.get("wo") or "").strip().lower() for r in rows]
+                repeated = sorted({k for k in keys if k and keys.count(k) > 1})
+                if repeated:
+                    return self._error(409, "duplicate key value violates unique constraint", "23505",
+                                       details=f"Key (lower(btrim(wo)))=({repeated[0]}) already exists.")
+            DB.tables["order_book"] = rows
+            DB.next_id = next_id
             version = str((int(current) if current.isdigit() else 0) + 1)
             if meta is None:
                 DB.tables["app_meta"].append({"key": "data_version", "value": version})

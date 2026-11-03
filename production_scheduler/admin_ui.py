@@ -10,8 +10,6 @@ from production_scheduler.feedback import flash
 from production_scheduler.live_updates import format_time, refresh_seconds
 from production_scheduler.supabase_io import read_meta
 
-SORT_NEWEST = "Descending (Newest First)"
-SORT_OLDEST = "Ascending (Oldest First)"
 FILTER_DEFAULTS = {
     "quote": "", "quote_match": "Contains",
     "po": "", "po_match": "Contains",
@@ -19,9 +17,11 @@ FILTER_DEFAULTS = {
     "customer": "", "customer_match": "Contains",
     "model": "", "model_match": "Contains",
     "date_type": "None",
-    "sort": SORT_NEWEST,
 }
 DATE_FILTERS = ("exact_date", "month", "year")  # only exist while their date filter is chosen
+SORT_COLUMNS = ["Scheduled Date"] + [c for c in order_book.REQUIRED_COLS if c != "Scheduled Date"]
+SORT_DEFAULTS = {"sort_by": "Scheduled Date", "sort_order": "Descending"}
+DATE_COLUMNS = ("Scheduled Date", "Completion Date")
 
 
 # ---------------- Save bar ----------------
@@ -42,6 +42,9 @@ def save_bar(where: str) -> None:
                     st.caption(f"…and {len(details) - 100} more.")
         else:
             st.markdown("✅ **No unsaved changes**")
+        repeated = order_book.repeated_wo_messages(ss.df)
+        if repeated:
+            st.error(admin_session.REPEATED_WO_MESSAGE + "\n\n" + "\n".join(f"- {line}" for line in repeated))
         saved = format_time(ss.saved_at)
         loaded = f"File: {ss.last_uploaded_name}. " if ss.last_uploaded_name else ""
         st.caption(f"{loaded}Database last saved {saved}." if saved else loaded)
@@ -53,7 +56,10 @@ def save_bar(where: str) -> None:
                 "Password", type="password", key=f"password_{where}",
                 help="Asked once per session; saves after that need only a click.",
             )
-        save_clicked = cols[1].button("💾 Save schedule", type="primary", disabled=not count, key=f"save_{where}")
+        save_clicked = cols[1].button(
+            "💾 Save schedule", type="primary", disabled=not count or bool(repeated), key=f"save_{where}",
+            help="Fix the repeated WO numbers first." if repeated else None,
+        )
         undo_clicked = cols[2].button("↩️ Undo", disabled=not ss.undo_stack, key=f"undo_{where}")
         discard_clicked = cols[3].button("Discard changes", disabled=not count, key=f"discard_{where}")
         reload_clicked = cols[4].button(
@@ -164,9 +170,6 @@ def _filter_controls(where: str) -> dict:
             st.markdown("**Date Filter**")
             st.radio("Filter by", ["None", "Exact Date", "Month"], horizontal=True, key=k("date_type"))
 
-            st.markdown("**Sort by Scheduled Date**")
-            st.selectbox("Sort Order", [SORT_NEWEST, SORT_OLDEST], key=k("sort"), label_visibility="collapsed")
-
             date_type = st.session_state[k("date_type")]
             if date_type == "Exact Date":
                 st.date_input("Select Date", key=k("exact_date"))
@@ -178,7 +181,14 @@ def _filter_controls(where: str) -> dict:
 
         st.button("🔄 Clear All Filters", on_click=_clear_filters, args=(where,), key=k("clear"))
 
-    return {name: st.session_state.get(k(name)) for name in [*FILTER_DEFAULTS, *DATE_FILTERS]}
+    for name, value in SORT_DEFAULTS.items():
+        st.session_state.setdefault(k(name), value)
+    c = st.columns([2, 2, 3])
+    c[0].selectbox("Sort by", SORT_COLUMNS, key=k("sort_by"))
+    c[1].radio("Order", ["Ascending", "Descending"], horizontal=True, key=k("sort_order"))
+
+    names = [*FILTER_DEFAULTS, *DATE_FILTERS, *SORT_DEFAULTS]
+    return {name: st.session_state.get(k(name)) for name in names}
 
 
 def apply_filters(df: pd.DataFrame, f: dict) -> pd.DataFrame:
@@ -207,11 +217,29 @@ def apply_filters(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     elif f["date_type"] == "Month" and f.get("month") and f.get("year"):
         out = out[(dates.dt.month == f["month"]) & (dates.dt.year == f["year"])]
 
-    newest_first = f["sort"] != SORT_OLDEST
-    order = pd.to_datetime(out["Scheduled Date"], errors="coerce")
-    return out.assign(_order=order).sort_values(
-        ["_order", "WO"], ascending=[not newest_first, True], na_position="last", kind="stable"
-    ).drop(columns="_order")
+    return sort_orders(out, f["sort_by"], descending=f["sort_order"] == "Descending")
+
+
+def _natural(values: pd.Series) -> pd.Series:
+    """Text that sorts numbers by value (2164-02 before 2164-10, 100 before 1000),
+    ignoring capitals. Blank becomes missing, so it sorts last."""
+    text = values.fillna("").astype(str).str.strip().str.lower()
+    keyed = text.str.replace(r"\d+", lambda m: m.group(0).zfill(12), regex=True)
+    return keyed.where(text != "", None)
+
+
+def sort_orders(df: pd.DataFrame, column: str, descending: bool = False) -> pd.DataFrame:
+    """Sort by any column; blanks go last either way, and ties go by Scheduled Date, then WO."""
+    if column in DATE_COLUMNS:
+        key = pd.to_datetime(df[column], errors="coerce")
+    elif column == "Price":
+        key = pd.to_numeric(df[column], errors="coerce")
+    else:
+        key = _natural(df[column])
+    keys = {"_k1": key, "_k2": pd.to_datetime(df["Scheduled Date"], errors="coerce"), "_k3": _natural(df["WO"])}
+    return df.assign(**keys).sort_values(
+        list(keys), ascending=[not descending, True, True], na_position="last", kind="stable"
+    ).drop(columns=list(keys))
 
 
 def orders_table(where: str) -> None:
@@ -219,10 +247,14 @@ def orders_table(where: str) -> None:
     committed (Enter or leaving the cell); no separate Apply step."""
     ss = st.session_state
     filters = _filter_controls(where)
-    signature = tuple(sorted(filters.items()))
+    repeated_ids = sorted(i for rep in order_book.repeated_wos(ss.df) for i in rep.ids)
+    signature = (tuple(sorted(filters.items())), tuple(repeated_ids))
     snap = admin_session.table_snapshot(where)
     if snap is None or snap["rev"] != ss.data_rev or snap["filters"] != signature:
         shown = apply_filters(ss.df, filters).reset_index(drop=True)
+        if repeated_ids:
+            flags = shown[order_book.ID].map(lambda i: "⚠ Repeated WO" if i in set(repeated_ids) else "")
+            shown.insert(shown.columns.get_loc("WO") + 1, admin_session.CHECK_COLUMN, flags)
         snap = admin_session.reset_table(where, shown, signature)
 
     st.caption(
@@ -237,6 +269,9 @@ def orders_table(where: str) -> None:
             hide_index=True,
             column_config={
                 order_book.ID: None,  # hidden, but kept: it says which order each row is
+                admin_session.CHECK_COLUMN: st.column_config.TextColumn(
+                    disabled=True, help="This WO number is also used by another order."
+                ),
                 "Scheduled Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
                 "Completion Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
                 "Price": st.column_config.NumberColumn(format="$%.2f"),

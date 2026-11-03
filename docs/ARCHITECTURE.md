@@ -40,6 +40,7 @@ This document explains how the apps and shared modules work together, and where 
 - `order_book.py`
   - The admin data rules: loading, cleaning uploads and table edits, comparing and saving
   - Every order keeps its database `id`; orders added in the app get a temporary `new-N` id until saved
+  - WO numbers can't repeat (`repeated_wos`; capitals/spaces ignored, blanks allowed); repeats block saving
   - Saving sends only the differences through the `save_schedule` database function
 
 - `admin_session.py`
@@ -56,7 +57,7 @@ This document explains how the apps and shared modules work together, and where 
   - Periodic check for newer saves (`REFRESH_SECONDS`), time display in the viewer's time zone
 
 - `calendar_sync.py`
-  - Reads drag-and-drop messages from the admin calendar and applies each one exactly once
+  - Reads drop, order-click (cut) and day-click (paste) messages from the admin calendar and applies each one exactly once
   - Runs before the calendar is drawn, so a dropped event never jumps back
 
 - `supabase_io.py`
@@ -84,12 +85,13 @@ This document explains how the apps and shared modules work together, and where 
 2. Uploads are shown as a preview first; confirming replaces the working copy
 3. Drags and table edits change the working copy, matched by `id`. Both are applied at the
    top of the script run, before the calendar and table are drawn, so each view shows the
-   other's edits in the same run. Calendar events carry the data revision so a drag message
-   is applied exactly once; the calendar keeps one widget key so it never loses its month
+   other's edits in the same run. Calendar events carry the data revision so a drag or click
+   message is applied exactly once; the calendar keeps one widget key so it never loses its month
 4. **Save schedule** compares the working copy with what was loaded and calls
    `save_schedule(expected_version, upserts, deletes)` (see `db/save_schedule.sql`).
    In one transaction it checks the version, writes the changes and bumps the version;
-   if the version moved on (someone else saved), nothing is written
+   if the version moved on (someone else saved), nothing is written. A unique index on
+   `lower(btrim(wo))` (non-blank WOs only) refuses repeated WO numbers
 5. After a save the admin reloads. Other open pages notice the new `data_version` within
    `REFRESH_SECONDS`: admin pages show a banner (unsaved work is kept), customer pages redraw
 

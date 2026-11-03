@@ -5,6 +5,10 @@ the app, so a drag, a table edit or a save always affects exactly that order,
 even when WO numbers repeat or are blank. Orders added in the app get a
 temporary id ("new-1", "new-2", ...) until they are saved.
 
+WO numbers must not repeat (ignoring capitals and surrounding spaces); blank
+WOs are allowed. Repeats are flagged wherever they appear and block saving,
+and the database refuses them too (db/save_schedule.sql).
+
 Saving sends only what changed since the orders were loaded, through the
 ``save_schedule`` database function (db/save_schedule.sql), which applies the
 whole save in one transaction and refuses it if someone else saved first.
@@ -54,6 +58,7 @@ NO_ID_PROBLEM = (
 )
 CONFLICT_CODE = "PT409"  # raised by save_schedule when the version moved on
 MISSING_FUNCTION_CODE = "PGRST202"
+UNIQUE_VIOLATION_CODE = "23505"  # the database's own repeated-WO guard
 
 
 class MissingColumnsError(ValueError):
@@ -69,6 +74,10 @@ class SaveConflict(Exception):
 
 class SaveSetupMissing(Exception):
     """The save_schedule database function hasn't been created yet."""
+
+
+class SaveRepeatedWO(Exception):
+    """The database refused a WO number another order already has; nothing was written."""
 
 
 # ---------------- Parsing ----------------
@@ -104,6 +113,19 @@ def parse_price(x):
         return pd.NA
 
 
+def _cell_text(value) -> str:
+    """A spreadsheet cell as text. A number column with a blank cell is read as
+    decimals, so WO 100 arrives as 100.0; whole numbers lose the ".0"."""
+    try:
+        if value is None or pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df = df.rename(columns={c: COLUMN_ALIASES.get(clean_header(c), str(c).strip()) for c in df.columns})
@@ -119,7 +141,7 @@ def clean_rows(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(how="all", subset=REQUIRED_COLS).copy()
 
     for c in TEXT_COLS:
-        df[c] = df[c].where(df[c].notna(), "").astype(str).str.strip()
+        df[c] = df[c].map(_cell_text)
         df[c] = df[c].replace({"nan": "", "NaN": "", "None": "", "<NA>": ""})
 
     df["Scheduled Date"] = df["Scheduled Date"].apply(parse_date).astype(object)
@@ -211,6 +233,46 @@ def apply_table_delta(shown: pd.DataFrame, delta: dict) -> pd.DataFrame:
     if added:
         df = pd.concat([df, pd.DataFrame(added, columns=df.columns)], ignore_index=True)
     return df
+
+
+# ---------------- WO numbers ----------------
+
+def wo_key(value) -> str:
+    """How WO numbers are compared: capitals and surrounding spaces don't matter."""
+    return _text(value).strip().lower()
+
+
+@dataclass
+class RepeatedWO:
+    wo: str         # as first typed
+    ids: list[str]  # the orders that share it
+
+
+def repeated_wos(df: pd.DataFrame) -> list[RepeatedWO]:
+    """WO numbers used by more than one order. Blank WOs are allowed and never count."""
+    keys = [wo_key(v) for v in df["WO"].tolist()]
+    seen: dict[str, RepeatedWO] = {}
+    for key, wo, rid in zip(keys, df["WO"].tolist(), df[ID].astype(str).tolist()):
+        if key:
+            seen.setdefault(key, RepeatedWO(_text(wo).strip(), [])).ids.append(rid)
+    return [r for r in seen.values() if len(r.ids) > 1]
+
+
+def repeated_wo_messages(df: pd.DataFrame) -> list[str]:
+    """One line per repeated WO, naming the orders that share it."""
+    repeats = repeated_wos(df)
+    if not repeats:
+        return []
+    by_id = {str(r[ID]): r for _, r in df.iterrows()}
+    lines = []
+    for rep in repeats:
+        orders = [
+            f"{_text(by_id[i].get('Customer Name')).strip() or 'no customer'} "
+            f"({_iso(by_id[i].get('Scheduled Date')) or 'no date'})"
+            for i in rep.ids
+        ]
+        lines.append(f"WO {rep.wo} is used by {len(rep.ids)} orders: " + "; ".join(orders))
+    return lines
 
 
 # ---------------- Loading ----------------
@@ -401,8 +463,9 @@ def save(client: Client, changes: Changes, expected_version: str) -> str:
     """Write ``changes`` in one transaction; return the new version.
 
     Raises SaveConflict if the database version is no longer
-    ``expected_version``, and SaveSetupMissing if db/save_schedule.sql hasn't
-    been run. Nothing is written in either case.
+    ``expected_version``, SaveSetupMissing if db/save_schedule.sql hasn't
+    been run, and SaveRepeatedWO if the database refuses a repeated WO.
+    Nothing is written in any of these cases.
     """
     upserts = [{k: _json_value(v) for k, v in row.items()} for row in changes.upserts]
     try:
@@ -415,6 +478,8 @@ def save(client: Client, changes: Changes, expected_version: str) -> str:
             raise SaveConflict(err.details or err.message) from err
         if err.code == MISSING_FUNCTION_CODE:
             raise SaveSetupMissing(err.message) from err
+        if err.code == UNIQUE_VIOLATION_CODE:
+            raise SaveRepeatedWO(err.details or err.message) from err
         raise
     return str(resp.data)
 
@@ -434,17 +499,21 @@ class ImportPreview:
 def import_preview(current: pd.DataFrame, incoming: pd.DataFrame) -> ImportPreview:
     def by_wo(df):
         groups: dict[str, list[dict]] = {}
+        shown: dict[str, str] = {}
         for _, r in df.iterrows():
-            groups.setdefault(_text(r.get("WO")).strip(), []).append(to_record(r))
-        groups.pop("", None)
-        return groups
+            key = wo_key(r.get("WO"))
+            if key:
+                groups.setdefault(key, []).append(to_record(r))
+                shown.setdefault(key, _text(r.get("WO")).strip())
+        return groups, shown
 
-    now, then = by_wo(incoming), by_wo(current)
+    (now, names), (then, old_names) = by_wo(incoming), by_wo(current)
+    names = {**old_names, **names}
     return ImportPreview(
         rows=len(incoming),
-        new=sorted(wo for wo in now if wo not in then),
-        changed=sorted(wo for wo in now if wo in then and len(now[wo]) == len(then[wo]) == 1 and now[wo] != then[wo]),
-        missing=sorted(wo for wo in then if wo not in now),
-        duplicates=sorted(wo for wo, recs in now.items() if len(recs) > 1),
+        new=sorted(names[k] for k in now if k not in then),
+        changed=sorted(names[k] for k in now if k in then and len(now[k]) == len(then[k]) == 1 and now[k] != then[k]),
+        missing=sorted(names[k] for k in then if k not in now),
+        duplicates=sorted(names[k] for k, recs in now.items() if len(recs) > 1),
         blank_wo=int((incoming["WO"].astype(str).str.strip() == "").sum()),
     )

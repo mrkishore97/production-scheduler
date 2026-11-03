@@ -80,3 +80,33 @@ def test_duplicate_wo_moves_only_the_dragged_order():
     df = frame(("7", "500", date(2026, 10, 5)), ("8", "500", date(2026, 10, 7)))
     assert apply_drag(df, parse_event_change(message(event_id="7", wo="500", new="2026-10-20"))) is True
     assert list(df["Scheduled Date"]) == [date(2026, 10, 20), date(2026, 10, 7)]
+
+
+# ---------- clicks (cut and paste) ----------
+
+from production_scheduler.calendar_sync import DayClick, EventClick, move_order, parse_click  # noqa: E402
+
+
+def test_reads_a_click_on_an_order():
+    click = parse_click({"callback": "eventClick", "eventClick": {"event": {"id": "7", "extendedProps": {"rev": "4.2"}}}})
+    assert click == EventClick("7", "4.2")
+    assert click.signature() != EventClick("7", "4.3").signature()
+
+
+def test_reads_a_click_on_a_day_in_the_viewers_time_zone():
+    # Nov 5 in India (UTC+5:30) is reported as 18:30 UTC on Nov 4.
+    state = {"callback": "dateClick", "dateClick": {"date": "2026-11-04T18:30:00.000Z", "allDay": True}}
+    assert parse_click(state, "Asia/Kolkata").day == date(2026, 11, 5)
+    # Nov 5 in Moncton (UTC-4) is reported as 04:00 UTC on Nov 5.
+    state = {"callback": "dateClick", "dateClick": {"date": "2026-11-05T04:00:00.000Z", "allDay": True}}
+    assert parse_click(state, "America/Moncton").day == date(2026, 11, 5)
+    # Without a time zone, the nearest midnight is used.
+    assert parse_click(state, None).day == date(2026, 11, 5)
+    assert isinstance(parse_click(state), DayClick)
+
+
+def test_move_order_only_moves_that_order():
+    df = frame(("7", "100", date(2026, 10, 5)), ("8", "101", date(2026, 10, 7)))
+    assert move_order(df, "8", date(2027, 1, 12)) is True
+    assert list(df["Scheduled Date"]) == [date(2026, 10, 5), date(2027, 1, 12)]
+    assert move_order(df, "8", date(2027, 1, 12)) is False

@@ -246,3 +246,64 @@ def filter_customer(page, text: str) -> None:
     field.fill(text)
     field.press("Enter")
     wait_for_app(page, 800)
+
+
+# ---------- sorting, cut and paste ----------
+
+def set_sort(page, column: str, order: str) -> None:
+    """Choose the table's Sort by column and Ascending/Descending order."""
+    page.get_by_label("Sort by").click()
+    page.get_by_role("option", name=column, exact=True).click()
+    wait_for_app(page)
+    page.get_by_text(order, exact=True).click()
+    wait_for_app(page)
+
+
+def cut_order(page, wo: str) -> None:
+    """Click an order on the calendar, which cuts it."""
+    page.locator("iframe[title='streamlit_calendar.calendar']").evaluate("el => el.scrollIntoView({block: 'start'})")
+    event(page, wo).first.click()
+    wait_for_app(page, 600)
+
+
+def click_day(page, day: date) -> None:
+    """Click an empty spot of a day cell (bottom-left, clear of orders and the day number)."""
+    page.locator("iframe[title='streamlit_calendar.calendar']").evaluate("el => el.scrollIntoView({block: 'start'})")
+    cell = day_cell(page, day)
+    box = cell.bounding_box()
+    cell.click(position={"x": 6, "y": box["height"] - 6})
+    wait_for_app(page, 600)
+
+
+def cut_bar(page):
+    return page.locator("[class*='st-key-cut_bar']")
+
+
+def edit_table_text(page, row: int, column: str, value: str, columns=None) -> None:
+    """Replace the text in a table cell and commit it with Enter.
+
+    ``columns`` is the visible column order (pass it when a Check column is showing).
+    """
+    _select_top_left_cell(page)
+    for _ in range((columns or TABLE_COLUMNS).index(column)):
+        page.keyboard.press("ArrowRight")
+    for _ in range(row):
+        page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    page.locator("textarea.gdg-input").first.wait_for()  # the cell's text editor is open
+    page.keyboard.press("Control+a")
+    page.keyboard.type(value)
+    page.wait_for_timeout(250)  # let the editor take the text before Enter commits it
+    page.keyboard.press("Enter")
+    wait_for_app(page, 800)
+
+
+def add_table_row(page, wo: str, rows_shown: int) -> None:
+    """Add a row by clicking the table's empty last row, and type a WO into it."""
+    x, y = _cell(page, rows_shown)
+    page.mouse.click(x + 60, y)  # adds the row and opens its first cell (WO) for typing
+    page.locator("textarea.gdg-input").first.wait_for()
+    page.keyboard.type(wo)
+    page.wait_for_timeout(250)  # let the editor take the text before Enter commits it
+    page.keyboard.press("Enter")
+    wait_for_app(page, 800)

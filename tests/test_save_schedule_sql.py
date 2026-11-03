@@ -50,7 +50,15 @@ def conn():
 
 
 def migrate(conn):
-    conn.execute(SQL)
+    """Run the setup script; return the result of its last statement (the status line)."""
+    cur = conn.execute(SQL)
+    result = None
+    while True:
+        if cur.description:
+            result = cur.fetchall()
+        if not cur.nextset():
+            break
+    return result[0][0] if result else None
 
 
 def save(conn, expected, upserts=(), deletes=()):
@@ -161,3 +169,40 @@ def test_app_meta_without_unique_key(conn):
     assert save(conn, "0", [row("100")]) == "1"
     assert save(conn, "1", [row("101")]) == "2"
     assert conn.execute("select count(*) from public.app_meta").fetchone()[0] == 2  # version + saved_at
+
+
+# ---------- no repeated WO numbers ----------
+
+def wo_rule_on(conn) -> bool:
+    return conn.execute("select 1 from pg_indexes where indexname = 'order_book_wo_unique'").fetchone() is not None
+
+
+def test_repeated_wo_is_refused_but_blanks_are_fine(conn):
+    assert migrate(conn).startswith("Done")
+    assert wo_rule_on(conn)
+    save(conn, "0", [row("2164-01"), row(""), row("")])  # two blank WOs: allowed
+    for variant in ["2164-01", " 2164-01 ", "2164-01".upper()]:
+        with pytest.raises(psycopg.Error) as err:
+            save(conn, "1", [row(variant)])
+        assert err.value.sqlstate == "23505"
+    with pytest.raises(psycopg.Error):
+        save(conn, "1", [row("ab-1"), row("AB-1")])
+    assert version(conn) == "1"  # nothing written by the refused saves
+
+
+def test_two_orders_can_swap_wo_numbers(conn):
+    migrate(conn)
+    save(conn, "0", [row("100"), row("200")])
+    (a, _, _), (b, _, _) = orders(conn)
+    save(conn, "1", [dict(row("200"), id=a), dict(row("100"), id=b)])
+    assert [(r[0], r[1]) for r in orders(conn)] == [(a, "200"), (b, "100")]
+
+
+def test_rule_waits_until_the_table_has_no_repeats(conn):
+    conn.execute("insert into public.order_book (wo) values ('100'), ('100 '), ('200'), (''), ('')")
+    status = migrate(conn)
+    assert "NOT blocked" in status and "100" in status and "200" not in status
+    assert not wo_rule_on(conn)
+    conn.execute("delete from public.order_book where wo = '100 '")
+    assert migrate(conn).startswith("Done")
+    assert wo_rule_on(conn)

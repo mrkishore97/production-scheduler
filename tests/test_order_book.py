@@ -129,7 +129,7 @@ def client(fake_db):
 
 
 def test_load_then_save_round_trip(fake_db, client):
-    fake_db.reset([order("100", D5), order("100", D7)])
+    fake_db.reset([order("100", D5), order("101", D7)])
     loaded = ob.load(client)
     working = loaded.df.copy()
     working.loc[0, "Scheduled Date"] = D15
@@ -213,3 +213,43 @@ def test_save_never_sends_nan(fake_db, client):
     changes = ob.Changes(upserts=[dict(ob.to_record(frame(("new-1", "100", "Acme", D5)).iloc[0]), price=float("nan"))], added=1)
     ob.save(client, changes, loaded.version)
     assert fake_db.orders()[0]["price"] is None
+
+
+# ---------- no repeated WO numbers ----------
+
+def test_repeated_wos_ignore_capitals_spaces_and_blanks():
+    df = frame(("1", "AB-1", "Acme", D5), ("2", " ab-1 ", "Beta", None), ("3", "", "C", D7),
+               ("4", "", "D", D9), ("5", "200", "E", D5))
+    reps = ob.repeated_wos(df)
+    assert [(r.wo, r.ids) for r in reps] == [("AB-1", ["1", "2"])]
+    assert ob.repeated_wo_messages(df) == ["WO AB-1 is used by 2 orders: Acme (2026-10-05); Beta (no date)"]
+    assert ob.repeated_wo_messages(df[df["id"] != "2"]) == []
+
+
+def test_import_preview_treats_capitals_and_spaces_as_the_same_wo():
+    current = frame(("1", "ab-1", "Acme", D5))
+    incoming = frame(("new-1", "AB-1 ", "Acme", D5), ("new-2", "x-9", "Beta", D7), ("new-3", "X-9", "Beta", D9))
+    p = ob.import_preview(current, incoming)
+    assert p.new == ["x-9"] and p.missing == [] and p.duplicates == ["x-9"]
+
+
+def test_database_refusing_a_repeated_wo_is_reported(fake_db, client):
+    fake_db.reset([order("100", D5)])
+    loaded = ob.load(client)
+    working = pd.concat([loaded.df, frame(("new-1", "100", "Beta", D7))], ignore_index=True)
+    with pytest.raises(ob.SaveRepeatedWO) as err:
+        ob.save(client, ob.diff(loaded.df, working), loaded.version)
+    assert "100" in str(err.value)
+    assert len(fake_db.orders()) == 1
+
+
+def test_numbers_read_as_decimals_keep_their_digits():
+    raw = pd.DataFrame({
+        "WO": [100, 1000, None], "Quote": [None, 5.0, None], "PO Number": [821000320, None, 3],
+        "Status": ["Open"] * 3, "Customer Name": ["Acme", "Beta", "Gamma"], "Model Description": ["Van"] * 3,
+        "Scheduled Date": [None] * 3, "Completion Date": [None] * 3, "Price": [1.5, None, 2.0],
+    })
+    df = ob.normalize_upload(raw)  # pandas reads these columns as floats because of the blanks
+    assert list(df["WO"]) == ["100", "1000", ""]
+    assert list(df["PO Number"]) == ["821000320", "", "3"]
+    assert list(df["Quote"]) == ["", "5", ""]

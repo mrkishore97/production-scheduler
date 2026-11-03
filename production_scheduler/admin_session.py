@@ -27,6 +27,15 @@ CONFLICT_MESSAGE = (
     "would overwrite their work. Your changes are still here. Download them if you need a copy, "
     "then click **Reload latest** and make them again."
 )
+REPEATED_WO_MESSAGE = (
+    "❌ Can't save: these WO numbers are used by more than one order. Change or remove "
+    "one of each, then save."
+)
+DATABASE_REPEATED_WO_MESSAGE = (
+    "❌ Changes not saved: the database already has an order with one of these WO numbers ({}). "
+    "Nothing was written. Click **Reload latest** to see the saved orders, then change the WO."
+)
+CHECK_COLUMN = "Check"  # shown in the table next to WO when a WO repeats; never saved
 SETUP_MESSAGE = (
     "❌ Changes not saved: the database needs a one-time setup for safe saving. Run "
     "`db/save_schedule.sql` in the Supabase SQL Editor (see README). Your changes are still here."
@@ -51,6 +60,8 @@ def init() -> None:
         "last_uploaded_signature": None,
         "unlocked": False,
         "saved_at": None,
+        "cut_id": None,  # the order cut on the calendar, waiting to be pasted
+        "calendar_rev": 0,  # bumped on cut/paste so the next click is a new message
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -137,10 +148,11 @@ def fold_table_edits(where: str) -> None:
         return
     if snap["rev"] != st.session_state.data_rev:
         return  # the data changed some other way since; the table is about to be redrawn
-    edited = order_book.clean_rows(order_book.apply_table_delta(snap["shown"], delta))
+    shown = snap["shown"].drop(columns=[CHECK_COLUMN], errors="ignore")
+    edited = order_book.clean_rows(order_book.apply_table_delta(shown, delta))
     # A row needs at least a WO, customer or model to count as an order.
     meaningful = edited[["WO", "Customer Name", "Model Description"]].ne("").any(axis=1)
-    new_df = order_book.merge_edits(snap["base"], snap["shown"][order_book.ID], edited[meaningful])
+    new_df = order_book.merge_edits(snap["base"], shown[order_book.ID], edited[meaningful])
     if not order_book.same_orders(st.session_state.df, new_df):
         change(new_df)
         snap["rev"] = st.session_state.data_rev  # its own edit: keep the table as it is
@@ -158,6 +170,9 @@ def save(done_message: str | None = None) -> bool:
     if st.session_state.load_problem:
         st.session_state.save_error = f"❌ Changes not saved. {st.session_state.load_problem}"
         return False
+    if order_book.repeated_wos(st.session_state.df):
+        st.session_state.save_error = REPEATED_WO_MESSAGE
+        return False
     changes = pending()
     if not changes:
         st.session_state.save_error = None
@@ -170,6 +185,9 @@ def save(done_message: str | None = None) -> bool:
         return False
     except order_book.SaveSetupMissing:
         st.session_state.save_error = SETUP_MESSAGE
+        return False
+    except order_book.SaveRepeatedWO as err:
+        st.session_state.save_error = DATABASE_REPEATED_WO_MESSAGE.format(err)
         return False
     except Exception as err:
         st.session_state.save_error = (

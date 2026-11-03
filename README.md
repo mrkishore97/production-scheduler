@@ -90,9 +90,11 @@ again later is harmless.
 It creates the `save_schedule` function the admin pages save through. Each save
 then writes only the orders that changed, all in one transaction, and is
 refused if someone else saved after you loaded the schedule. It also records
-when the schedule was last saved, which the pages show. Until it has been run,
-the admin pages show a message instead of saving. If you ran an earlier version
-of the script, run this one again.
+when the schedule was last saved, and stops WO numbers repeating. The result
+shown after **Run** says whether that rule is on; if the table already repeats a
+WO, it lists them, so fix those in the app, save, and run the script again. Until
+it has been run, the admin pages show a message instead of saving. If you ran an
+earlier version of the script, run this one again.
 
 ### 4) Run apps
 
@@ -149,6 +151,18 @@ Expected canonical fields used across apps:
   A drag shows up in the table, and a table edit (committed with Enter or by leaving
   the cell) shows up on the calendar, straight away; the shown month and the table
   filters stay as they are. The **table view** page edits the same copy.
+- **Moving orders.** Drag an order to another day, or **cut and paste** it: click the
+  order (it turns dashed), go to any month, and click the day it should move to. The
+  bar above the calendar also takes a date. Pasting moves the order; it never copies
+  it. The **2 months** view shows two months as one grid, so you can also drag
+  straight across the end of a month.
+- **Sorting.** Sort the table by any column, ascending or descending. WO numbers sort
+  by value (2164-02 before 2164-10), blanks go last, and the sort stays as you set it.
+- **WO numbers can't repeat.** A WO already used by another order (capitals and
+  spaces don't count) is flagged in the save bar, marked on the calendar and in the
+  table's Check column, and saving stays off until it's fixed. Blank WOs are allowed.
+  A spreadsheet that repeats a WO can't be imported. The database enforces the same
+  rule once `db/save_schedule.sql` has been run on a table without repeats.
 - **Saving.** The save bar counts unsaved changes and lists them. **Save schedule**
   asks for the password once per session and sends only the changed orders through
   `save_schedule`; if another admin saved first, the save is refused and nothing is

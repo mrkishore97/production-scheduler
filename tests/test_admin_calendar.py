@@ -152,11 +152,16 @@ def test_save_refused_when_load_was_incomplete(page, fake_db, admin_url):
     assert page.get_by_text("not saved", exact=False).first.is_visible()
 
 
-def test_duplicate_wo_drag_moves_only_that_order(page, fake_db, admin_url):
-    fake_db.reset([order("500", month_day(5)), order("500", month_day(7), customer="Beta Industries")])
+def test_repeated_wo_already_saved_is_flagged_and_blocks_saving(page, fake_db, admin_url):
+    fake_db.reset([order("500", month_day(5)), order("500", month_day(7), customer="Beta Industries")],
+                  wo_unique=False)  # as if saved before the rule existed
     open_app(page, admin_url)
+    assert page.get_by_text("WO 500 is used by 2 orders", exact=False).first.is_visible()
+    assert calendar(page).locator(".wo-repeated").count() == 2
+
     drag_event(page, "500", month_day(20), index=0)
-    assert working_dates(page)["500"] == sorted([iso(7), iso(20)])
+    assert working_dates(page)["500"] == sorted([iso(7), iso(20)])  # only the dragged one moved
+    assert page.get_by_role("button", name="Save schedule").is_disabled()
 
 
 def test_failed_save_keeps_everything_and_can_be_retried(page, fake_db, admin_url):
@@ -214,19 +219,32 @@ def test_import_preview_then_replace(page, fake_db, admin_url, tmp_path):
 
     sheet = tmp_path / "new.xlsx"
     to_upload_frame([order("100", month_day(15)), order("102", month_day(5)),
-                     order("103", month_day(6)), order("103", month_day(7))]).to_excel(sheet, index=False)
+                     order("103", month_day(6)), order("", month_day(7))]).to_excel(sheet, index=False)
     upload(page, sheet, confirm=False)
 
     def metric(label):
         return page.locator("[data-testid='stMetric']", has_text=label).locator("[data-testid='stMetricValue']").inner_text()
 
-    assert (metric("New WOs"), metric("Changed WOs"), metric("Removed WOs"), metric("Duplicate WOs")) == ("2", "1", "1", "1")
+    assert (metric("New WOs"), metric("Changed WOs"), metric("Removed WOs"), metric("Duplicate WOs")) == ("2", "1", "1", "0")
     assert working_dates(page) == {"100": [iso(10)], "101": [iso(11)]}  # nothing replaced yet
 
     page.get_by_role("button", name="Replace schedule with this file").click()
     wait_for_app(page, 800)
     save(page)
-    assert saved_dates(fake_db) == {"100": [iso(15)], "102": [iso(5)], "103": [iso(6), iso(7)]}
+    assert saved_dates(fake_db) == {"100": [iso(15)], "102": [iso(5)], "103": [iso(6)], "": [iso(7)]}
+
+
+def test_import_that_repeats_a_wo_is_blocked(page, fake_db, admin_url, tmp_path):
+    fake_db.reset([order("100", month_day(10))])
+    open_app(page, admin_url)
+    sheet = tmp_path / "repeats.xlsx"
+    to_upload_frame([order("103", month_day(6)), order("103 ", month_day(7)), order("", None),
+                     order("", None)]).to_excel(sheet, index=False)
+    upload(page, sheet, confirm=False)
+
+    assert page.get_by_text("more than once: 103", exact=False).first.is_visible()
+    assert page.get_by_role("button", name="Replace schedule with this file").is_disabled()
+    assert working_dates(page) == {"100": [iso(10)]}
 
 
 def test_import_with_blank_prices_and_dates_saves(page, fake_db, admin_url, tmp_path):
@@ -332,7 +350,7 @@ def test_month_stays_after_visiting_table(page, fake_db, admin_url):
 def test_filtered_table_edit_leaves_hidden_orders_alone(page, fake_db, admin_url):
     fake_db.reset([
         order("500", month_day(5)),
-        order("500", month_day(7), customer="Beta Industries"),
+        order("501", month_day(7), customer="Beta Industries"),
         order("", None, customer="No WO Co"),
         order("", month_day(9), customer="Other Co"),
     ])
@@ -342,7 +360,7 @@ def test_filtered_table_edit_leaves_hidden_orders_alone(page, fake_db, admin_url
     edit_table_date(page, row=0, value=month_day(15))
     save(page)
 
-    assert saved_dates(fake_db) == {"500": [iso(7), iso(15)], "": ["", iso(9)]}
+    assert saved_dates(fake_db) == {"500": [iso(15)], "501": [iso(7)], "": ["", iso(9)]}
 
 
 def test_deleting_every_shown_row_deletes_them(page, fake_db, admin_url):

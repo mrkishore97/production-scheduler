@@ -16,8 +16,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from production_scheduler import admin_session, admin_ui, order_book
-from production_scheduler.calendar_sync import apply_drag, parse_event_change
-from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, build_calendar_options
+from production_scheduler.calendar_sync import DayClick, EventClick, apply_drag, move_order, parse_click, parse_event_change
+from production_scheduler.calendar_ui import ADMIN_CALENDAR_CUSTOM_CSS, PASTE_TARGET_CSS, build_calendar_options
 from production_scheduler.feedback import flash
 from production_scheduler.status import normalize_status_key, status_to_colors
 
@@ -27,8 +27,9 @@ st.set_page_config(page_title="Order Book Calendar", layout="wide")
 
 # ---------------- Helpers ----------------
 
-def df_to_calendar_events(df: pd.DataFrame, rev: int):
-    """Calendar events; ``rev`` (the data revision) lets each drag be applied only once."""
+def df_to_calendar_events(df: pd.DataFrame, rev: str, cut_id: str | None = None, flagged=frozenset()):
+    """Calendar events. ``rev`` lets each drag or click be applied only once;
+    the cut order and orders with a repeated WO are marked."""
     events = []
     for _, r in df.iterrows():
         wo = str(r.get("WO", "")).strip()
@@ -43,10 +44,12 @@ def df_to_calendar_events(df: pd.DataFrame, rev: int):
         if model:
             title += f" — {model}"
 
+        order_id = str(r[order_book.ID])
+        marks = (["cut-order"] if order_id == cut_id else []) + (["wo-repeated"] if order_id in flagged else [])
         events.append({
-            # The row id, not the WO: WOs can repeat or be blank.
-            "id": str(r[order_book.ID]), "title": title,
-            "start": d.isoformat(), "allDay": True,
+            # The row id, not the WO: WOs can be blank.
+            "id": order_id, "title": title,
+            "start": d.isoformat(), "allDay": True, "classNames": marks,
             **status_to_colors(status),
             "extendedProps": {"wo": wo, "customer_name": cust,
                               "model_description": model, "status": status, "rev": rev},
@@ -373,15 +376,39 @@ if "show_print_preview" not in st.session_state:
 CALENDAR_KEY = "calendar"
 admin_session.fold_table_edits("schedule")
 
-drag = parse_event_change(st.session_state.get(CALENDAR_KEY))
-if drag and drag.signature() != st.session_state.last_applied_change:
-    st.session_state.last_applied_change = drag.signature()
+
+def paste_cut_order(day: date) -> None:
+    """Move the cut order to ``day`` (cut and paste never makes a copy)."""
+    cut_id = st.session_state.cut_id
     moved = st.session_state.df.copy()
-    if apply_drag(moved, drag):
+    if move_order(moved, cut_id, day):
         admin_session.change(moved)
-        st.toast(f"WO {drag.wo or '(none)'} moved to {drag.new_date:%a %b %d, %Y}")
-    if drag.view_date:
-        st.session_state.calendar_view = {"date": drag.view_date.isoformat(), "view": drag.view_type}
+        wo = moved.loc[moved[order_book.ID] == cut_id, "WO"].iloc[0]
+        st.toast(f"WO {wo or '(none)'} moved to {day:%a %b %d, %Y}")
+    st.session_state.cut_id = None
+    st.session_state.calendar_rev += 1
+
+
+message = st.session_state.get(CALENDAR_KEY)
+drag = parse_event_change(message)
+click = None if drag else parse_click(message, st.context.timezone)
+if (drag or click) and (drag or click).signature() != st.session_state.last_applied_change:
+    st.session_state.last_applied_change = (drag or click).signature()
+    if drag:
+        moved = st.session_state.df.copy()
+        if apply_drag(moved, drag):
+            admin_session.change(moved)
+            st.toast(f"WO {drag.wo or '(none)'} moved to {drag.new_date:%a %b %d, %Y}")
+    elif isinstance(click, EventClick):
+        # Clicking an order cuts it; clicking it again puts it back.
+        st.session_state.cut_id = None if st.session_state.cut_id == click.event_id else click.event_id
+        st.session_state.pop("paste_date", None)
+        st.session_state.calendar_rev += 1
+    elif isinstance(click, DayClick) and st.session_state.cut_id:
+        paste_cut_order(click.day)
+    seen = drag or (click if isinstance(click, DayClick) else None)  # these report the shown month
+    if seen and seen.view_date:
+        st.session_state.calendar_view = {"date": seen.view_date.isoformat(), "view": seen.view_type}
 
 
 # ---------------- Sidebar ----------------
@@ -458,14 +485,20 @@ if pending:
         m3.metric("Removed WOs", len(preview.missing), help="In the current schedule but not in the file")
         m4.metric("Duplicate WOs in file", len(preview.duplicates))
         if preview.blank_wo:
-            st.warning(f"{preview.blank_wo} row(s) in the file have no WO number.")
+            st.info(f"{preview.blank_wo} row(s) in the file have no WO number (that's allowed).")
+        if preview.duplicates:
+            st.error(
+                f"❌ This file uses {len(preview.duplicates)} WO number(s) more than once: "
+                f"{', '.join(preview.duplicates)}. Each WO can only be used once, so the file can't "
+                "replace the schedule. Fix the spreadsheet and upload it again."
+            )
         with st.expander("Show WO numbers"):
             for label, wos in [("New", preview.new), ("Changed", preview.changed),
                                ("Removed", preview.missing), ("Duplicated", preview.duplicates)]:
                 if wos:
                     st.write(f"**{label}:** " + ", ".join(wos))
         c1, c2 = st.columns(2)
-        if c1.button("Replace schedule with this file", type="primary"):
+        if c1.button("Replace schedule with this file", type="primary", disabled=bool(preview.duplicates)):
             admin_session.change(pending["df"])
             st.session_state.last_uploaded_name = pending["name"]
             st.session_state.last_uploaded_signature = pending["signature"]
@@ -479,10 +512,40 @@ if pending:
 
 admin_ui.save_bar("schedule")
 
-events = df_to_calendar_events(st.session_state.df, st.session_state.data_rev)
+# ---------------- Cut and paste ----------------
+cut_rows = st.session_state.df[st.session_state.df[order_book.ID] == st.session_state.cut_id]
+if st.session_state.cut_id and cut_rows.empty:  # the cut order was deleted meanwhile
+    st.session_state.cut_id = None
+if st.session_state.cut_id:
+    cut = cut_rows.iloc[0]
+    cut_day = cut["Scheduled Date"] if not pd.isna(cut["Scheduled Date"]) else None
+    with st.container(border=True, key="cut_bar"):
+        when = f"{cut_day:%a %b %d, %Y}" if cut_day else "no date"
+        st.markdown(f"✂️ **WO {cut['WO'] or '(no WO)'}** · {cut['Customer Name'] or 'no customer'} ({when}) is cut.")
+        st.caption("Click any day on the calendar to paste it there (use the arrows to change month), or pick a date:")
+        c = st.columns([2, 1, 1, 3])
+        paste_day = c[0].date_input("Paste on", value=cut_day or date.today(), key="paste_date",
+                                    label_visibility="collapsed")
+        if c[1].button("📋 Paste", type="primary"):
+            paste_cut_order(paste_day)
+            st.rerun()
+        if c[2].button("Cancel cut"):
+            st.session_state.cut_id = None
+            st.session_state.calendar_rev += 1
+            st.rerun()
+else:
+    st.caption("✂️ Tip: click an order to cut it, then click any day, in any month, to paste it there.")
 
-# Only drops are reported back. Other calendar messages (clicks, event loads)
-# would each re-run the whole page for nothing.
+flagged = {i for rep in order_book.repeated_wos(st.session_state.df) for i in rep.ids}
+events = df_to_calendar_events(
+    st.session_state.df,
+    f"{st.session_state.data_rev}.{st.session_state.calendar_rev}",
+    cut_id=st.session_state.cut_id,
+    flagged=flagged,
+)
+
+# Drops, clicks on orders (cut) and clicks on days (paste) are reported back;
+# other calendar messages would each re-run the whole page for nothing.
 calendar(
     events=events,
     options=build_calendar_options(
@@ -491,8 +554,8 @@ calendar(
         initial_date=st.session_state.calendar_view.get("date"),
         initial_view=st.session_state.calendar_view.get("view"),
     ),
-    custom_css=ADMIN_CALENDAR_CUSTOM_CSS,
-    callbacks=["eventChange"],
+    custom_css=ADMIN_CALENDAR_CUSTOM_CSS + (PASTE_TARGET_CSS if st.session_state.cut_id else ""),
+    callbacks=["eventChange", "eventClick", "dateClick"],
     key=CALENDAR_KEY,
 )
 

@@ -20,6 +20,7 @@ from ui import (
     pending_text,
     save,
     saved_dates,
+    set_sort,
     shown_month,
     table_rows,
     wait_for_app,
@@ -117,9 +118,7 @@ def test_clear_filters_and_sort_order(page, fake_db, admin_url):
     click(page, "Clear All Filters")
     assert set(dates_in_table(page)) == {"100", "101", "102"}
 
-    page.get_by_label("Sort Order").click()
-    page.get_by_role("option", name="Ascending (Oldest First)").click()
-    wait_for_app(page)
+    set_sort(page, "Scheduled Date", "Ascending")
     assert [r["WO"] for r in table_rows(page)] == ["100", "101", "102"]
     edit_table_date(page, row=0, value=month_day(20))  # top row is now the oldest order
     assert working_dates(page)["100"] == [iso(20)]
